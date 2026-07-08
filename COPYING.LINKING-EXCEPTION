@@ -1,0 +1,43 @@
+Additional permission for llmtune under the GNU GPL version 2
+==============================================================
+
+llmtune is licensed under the GNU General Public License, version 2 only
+(GPL-2.0-only; see LICENSE). Cachenetics, the sole copyright holder of
+llmtune, grants the following additional permission. It is a grant of
+extra permission on top of the GPL; it does not narrow, replace, or
+otherwise change the terms of the GPL, and the project's license remains
+GPL-2.0-only.
+
+Linking exception (special exception to the GNU GPL version 2)
+---------------------------------------------------------------
+
+In addition, as a special exception, Cachenetics, the copyright holder
+of llmtune, gives permission to link or combine the code of this program
+with the ring, rustls, and ureq libraries (the TLS stack used for
+network transport, or modified versions of those libraries that use the
+same licenses), and with any other library used solely to provide TLS or
+cryptography for network transport, and to convey and distribute linked
+combinations including those libraries, in source or binary form. You
+must obey the GNU General Public License in all respects for all of the
+code used other than the libraries covered by this exception. If you
+modify this program, you may extend this exception to your version of
+the program, but you are not obligated to do so. If you do not wish to
+do so, delete this exception statement from your version.
+
+Notes
+-----
+
+- This wording adapts the widely used "OpenSSL linking exception" form
+  of GPL special exception (the FSF-recognized additional-permission
+  pattern for GPLv2 programs that link against GPLv2-incompatible
+  TLS/cryptography libraries).
+- Rationale: the `ring` crate (reached via ureq -> rustls -> ring, used
+  only for TLS on https model downloads) is licensed "Apache-2.0 AND
+  ISC", and the FSF holds Apache-2.0 incompatible with GPLv2, which
+  would otherwise encumber redistribution of compiled binaries of the
+  combined work. This exception removes that encumbrance, so conveying
+  compiled llmtune binaries is unambiguously permitted.
+- Scope: the exception covers only libraries used solely to provide
+  TLS/cryptography for network transport. It does not extend to any
+  other combination, and it grants no rights to the llmtune, arieltune,
+  or Cachenetics trademarks (see NOTICE).

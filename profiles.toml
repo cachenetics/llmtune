@@ -1,0 +1,78 @@
+# llmtune per-architecture launch profiles for the BC-250.
+#
+# These encode the known-good llama-server flags per model architecture - the
+# knowledge that otherwise has to be rediscovered the hard way on this silicon
+# (Cyan Skillfish / Oberon, gfx1013, RDNA1-class, 16 GiB unified GDDR6).
+#
+# Resolution is by architecture-family PREFIX, in file order, skipping the
+# "_default" entry. The FIRST profile whose any `arch_match` prefix matches the
+# model's GGUF `general.architecture` wins. Order matters: list more specific
+# families (e.g. qwen35moe) BEFORE their broader sibling (qwen35). "_default" is
+# the fallback and flags the model as running on generic flags.
+#
+# `build` names a managed llama.cpp build (see builds.toml); `bin` is then the
+# binary NAME inside it ("llama-server") and the library path is taken from the
+# build automatically. Install it once with `llmtune build install vulkan`.
+# To use a hand-built llama instead, drop `build` and set `bin` to a full path
+# (and `ld_path` to its library dir) in ~/.config/llmtune/profiles.toml - that
+# user file, if present, fully replaces this bundled seed.
+#
+# MTP, Vulkan and RPC are all upstream since 2026-05-16 (PR #22673), so every
+# profile shares the one `vulkan` build. MTP is enabled with `--spec-type
+# draft-mtp --spec-draft-n-max 1`: the bare `--mtp` form from the initial merge
+# was folded into the general `--spec-type` framework by the MTP clean-up
+# (#23269), and current upstream rejects `--mtp`. Verified on a BC-250 (gfx1013):
+# the draft head runs on the Vulkan backend, no CPU fallback (2026-06-30).
+# n-max=1 is benched-optimal: the MTP head reliably predicts only one token, so
+# n-max=3 is slower on BOTH model families tested on the BC-250 (2026 sweeps) --
+# a dense 9B-Q8 ~30% slower, MoE Qwen3.6-35B-A3B-IQ2 ~19% slower. n-max=3
+# drafts ~3x the tokens but acceptance per drafted token falls (to ~30-48%), so
+# the extra draft+verify work for the rejected tokens 2-3 costs more than it
+# saves. (For reference the MoE runs ~95-99 tok/s at n-max=1, 68-75% accept.)
+# Do not bump without re-benching on the target model.
+
+[[profile]]
+id = "gemma"
+arch_match = ["gemma"]
+build = "vulkan"
+bin = "llama-server"
+# gemma needs a --cache-ram cap (or it OOMs the 14GiB UMA) plus --cache-reuse
+# (or every turn re-evaluates the full prompt).
+flags = "-c 32768 --parallel 1 --cache-ram 1024 --cache-reuse 256 --flash-attn on --no-mmap --jinja -ngl 99 -t 4 -ctk q4_0 -ctv q4_0 --temp 1.0 --top-p 0.95 --top-k 64"
+
+[[profile]]
+id = "lfm2"
+arch_match = ["lfm2"]
+build = "vulkan"
+bin = "llama-server"
+flags = "-c 32768 --parallel 1 --cache-ram 1024 --cache-reuse 256 --flash-attn on --no-mmap --jinja --reasoning off --metrics -ngl 99 -t 4 -ctk q4_0 -ctv q4_0"
+
+# qwen35moe (e.g. Qwen3.6-35B-A3B): carries MTP/nextn tensors -> serve with the
+# upstream MTP speculative draft (`--spec-type draft-mtp`, ~100% accept on the
+# BC-250). Weights (~12GiB IQ2) fill most of the 14GiB UMA, so -c is capped at
+# 32768. A qwen35moe WITHOUT MTP tensors fails MTP init -> the swap health-check
+# auto-reverts.
+[[profile]]
+id = "qwen35moe"
+arch_match = ["qwen35moe"]
+build = "vulkan"
+bin = "llama-server"
+env = { GGML_VULKAN_DEVICE = "0", GGML_VK_PREFER_HOST_MEMORY = "1" }
+flags = "-c 32768 --parallel 1 --flash-attn on --no-mmap --spec-type draft-mtp --spec-draft-n-max 1 --reasoning off --jinja -ngl 99 -t 4 -ctk q4_0 -ctv q4_0 --cache-ram 0 --ctx-checkpoints 4"
+
+# qwen35 (e.g. Qwen3.5-9B dense + MTP): same draft-mtp path, but the ~6-9GiB
+# weights leave UMA room for a bigger -c 98304 window.
+[[profile]]
+id = "qwen35"
+arch_match = ["qwen35"]
+build = "vulkan"
+bin = "llama-server"
+env = { GGML_VULKAN_DEVICE = "0", GGML_VK_PREFER_HOST_MEMORY = "1" }
+flags = "-c 98304 --parallel 1 --flash-attn on --no-mmap --spec-type draft-mtp --spec-draft-n-max 1 --reasoning off --jinja -ngl 99 -t 4 -ctk q4_0 -ctv q4_0 --cache-ram 0 --ctx-checkpoints 4"
+
+[[profile]]
+id = "_default"
+arch_match = []
+build = "vulkan"
+bin = "llama-server"
+flags = "-c 16384 --parallel 1 --cache-ram 1024 --cache-reuse 256 --flash-attn on --no-mmap --jinja -ngl 99 -t 4 -ctk q4_0 -ctv q4_0"

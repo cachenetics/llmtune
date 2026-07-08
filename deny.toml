@@ -1,0 +1,33 @@
+# cargo-deny configuration (license gate): `cargo deny check licenses`.
+#
+# The project is GPL-2.0-only. Every dependency must resolve to a
+# GPLv2-compatible license choice. Apache-2.0 is deliberately NOT in the
+# global allow list (the FSF holds Apache-2.0 incompatible with GPLv2);
+# dual-licensed MIT/Apache crates resolve to MIT automatically.
+#
+# Known exception: `ring` is licensed "Apache-2.0 AND ISC" (no permissive
+# alternative). It reaches the tree via ureq -> rustls and is only used for
+# TLS on https model downloads. RESOLVED for binary redistribution: the
+# copyright holder (Cachenetics) grants a GPL linking exception covering the
+# TLS stack (ring/rustls/ureq) - see COPYING.LINKING-EXCEPTION at the repo
+# root (issue #43). The per-crate exception below stays deliberately narrow:
+# it admits Apache-2.0 for `ring` ONLY; do not add further Apache-2.0-only
+# dependencies and do not add Apache-2.0 to the global allow list.
+
+[licenses]
+allow = [
+    "GPL-2.0-only",
+    "MIT",
+    "ISC",
+    "BSD-3-Clause",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+
+exceptions = [
+    { name = "ring", allow = ["Apache-2.0", "ISC"] },
+]

@@ -1,0 +1,27 @@
+llmtune - local LLM inference engine for the AMD BC-250
+Copyright 2026 Cachenetics
+
+This product is developed by Cachenetics and licensed under the GNU General
+Public License, version 2 only (GPL-2.0-only; see LICENSE).
+
+As a special exception, Cachenetics grants an additional permission under the
+GNU GPL version 2 to link or combine llmtune with the TLS/cryptography
+libraries it uses for network transport (ring, rustls, and the ureq/rustls
+chain) and to convey the resulting combined work, in source or binary form.
+The full grant is in COPYING.LINKING-EXCEPTION at the root of this
+distribution. The project's license remains GPL-2.0-only; the exception adds
+permission and removes none.
+
+------------------------------------------------------------------------------
+Trademarks
+------------------------------------------------------------------------------
+"llmtune", "arieltune", and "Cachenetics", and associated names and branding,
+are trademarks of Cachenetics. The GPL-2.0-only license conveys copyright
+permissions only; it grants NO rights to these names or marks. Forks and
+derivative works must use a different name.
+
+------------------------------------------------------------------------------
+Acknowledgments
+------------------------------------------------------------------------------
+llmtune builds on prior BC-250 community work: the bc250-collective (incl.
+mrfrakes, dantistnfs) for the original BC-250 bring-up and enablement groundwork.
