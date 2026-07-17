@@ -307,10 +307,13 @@ pub(crate) fn cmd_cluster_up(
             }
         }
     }
+    // Upstream renamed the worker binary rpc-server -> ggml-rpc-server; default
+    // to the current name. A cluster on an older pinned build can still set
+    // `rpc_bin = "rpc-server"` explicitly in its config.
     let rpc_bin = cl
         .rpc_bin
         .clone()
-        .unwrap_or_else(|| "rpc-server".to_string());
+        .unwrap_or_else(|| "ggml-rpc-server".to_string());
     // llama.cpp RPC has no authentication: default the workers' bind to
     // loopback and require an explicit `rpc_bind` opt-in for anything
     // reachable off-host (see `resolve_rpc_bind`). Warn whenever the

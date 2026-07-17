@@ -216,6 +216,10 @@ pub struct InstallOutcome {
     pub dir: PathBuf,
     pub action: Action,
     pub previous: Option<String>,
+    /// Whether the installed version carries an rpc worker binary (any accepted
+    /// name). False means single-node serving works but the node can't join a
+    /// cluster - a warning, never an install failure (rpc is optional).
+    pub rpc_present: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +348,7 @@ pub fn install<B: Builder>(
     // Already built? Activate without recompiling.
     if vdir.is_dir() && has_bins(&vdir, &spec.out_bins) {
         if cur.as_deref() == Some(slug.as_str()) {
+            let rpc_present = has_rpc(&vdir);
             return Ok(InstallOutcome {
                 name: spec.name.clone(),
                 commit,
@@ -351,8 +356,10 @@ pub fn install<B: Builder>(
                 dir: vdir,
                 action: Action::AlreadyCurrent,
                 previous: cur,
+                rpc_present,
             });
         }
+        let rpc_present = has_rpc(&vdir);
         flip_current(&spec.name, &slug)?;
         ledger_touch(&spec.name, &slug)?;
         gc(&spec.name, retain)?;
@@ -363,6 +370,7 @@ pub fn install<B: Builder>(
             dir: vdir,
             action: Action::Switched,
             previous: cur,
+            rpc_present,
         });
     }
 
@@ -396,6 +404,7 @@ pub fn install<B: Builder>(
     fs::rename(&stage, &vdir)
         .with_context(|| format!("installing build into {}", vdir.display()))?;
 
+    let rpc_present = has_rpc(&vdir);
     flip_current(&spec.name, &slug)?;
     ledger_touch(&spec.name, &slug)?;
     gc(&spec.name, retain)?;
@@ -407,6 +416,7 @@ pub fn install<B: Builder>(
         dir: vdir,
         action: Action::Built,
         previous: cur,
+        rpc_present,
     })
 }
 
@@ -539,6 +549,26 @@ pub fn current_bin(name: &str, bin: &str) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+/// Accepted names for the llama.cpp RPC worker binary, newest first. Upstream
+/// renamed `rpc-server` -> `ggml-rpc-server` (the `ggml-` tool prefix); a build
+/// pinned to an older commit still emits the old name, so every rpc lookup must
+/// accept both. Resolution is name-order, so a current build wins.
+pub const RPC_BIN_NAMES: &[&str] = &["ggml-rpc-server", "rpc-server"];
+
+/// Does `vdir` hold an rpc worker binary under any accepted name?
+fn has_rpc(vdir: &Path) -> bool {
+    RPC_BIN_NAMES.iter().any(|b| vdir.join(b).is_file())
+}
+
+/// Absolute path to the rpc worker binary in build `name`'s current version,
+/// under whichever accepted name it was built as. None if absent (or the build
+/// isn't installed) - i.e. this node cannot serve as a cluster worker.
+pub fn current_rpc_bin(name: &str) -> Option<PathBuf> {
+    RPC_BIN_NAMES
+        .iter()
+        .find_map(|b| current_bin(name, b))
+}
+
 /// The version slug currently active for build `name` (e.g. for tagging a bench
 /// run with the build that produced it). None if the build isn't installed.
 pub fn current_version(name: &str) -> Option<String> {
@@ -598,6 +628,12 @@ impl Builder for RealBuilder {
     }
 
     fn produce(&mut self, spec: &BuildSpec, commit: &str, stage: &Path) -> Result<()> {
+        // Fail FAST (before a 15-20 min compile) if the build toolchain or the
+        // Vulkan/SPIR-V dev packages are missing - with the exact per-distro
+        // install command. This is the only place a real compile happens, so a
+        // no-op reinstall (Switched/AlreadyCurrent) never trips it.
+        check_build_deps().ensure()?;
+
         let src = source_dir(&spec.name);
         // Clone (blobless, fast) or fetch the persistent source checkout.
         if src.join(".git").is_dir() {
@@ -655,9 +691,19 @@ impl Builder for RealBuilder {
         ];
         cfg.extend(spec.cmake_flags.split_whitespace().map(|s| s.to_string()));
         run_status("cmake", &str_args(&cfg), None).context("cmake configure")?;
+        // Cap parallelism to what RAM can feed: `ggml-vulkan.cpp` is one huge
+        // translation unit (~3 GB resident), so a bare `-j` (all cores) sends a
+        // 16 GB BC-250 into swap and looks hung. `build_jobs()` honors
+        // CMAKE_BUILD_PARALLEL_LEVEL, else derives a memory-aware count.
+        let jobs = build_jobs();
         run_status(
             "cmake",
-            &["--build", &build_dir.to_string_lossy(), "-j"],
+            &[
+                "--build",
+                &build_dir.to_string_lossy(),
+                "-j",
+                &jobs.to_string(),
+            ],
             None,
         )
         .context("cmake build")?;
@@ -751,6 +797,187 @@ fn tail_lines(s: &str, n: usize) -> String {
     lines[start..].join("\n")
 }
 
+// ---------------------------------------------------------------------------
+// Build parallelism - memory-aware, so a low-RAM BC-250 doesn't swap to death.
+// ---------------------------------------------------------------------------
+
+/// Total system RAM in GiB (best-effort from /proc/meminfo; 0 if unreadable).
+fn mem_total_gib() -> u64 {
+    fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                l.strip_prefix("MemTotal:")
+                    .and_then(|v| v.split_whitespace().next())
+                    .and_then(|kb| kb.parse::<u64>().ok())
+            })
+        })
+        .map(|kb| kb / (1024 * 1024))
+        .unwrap_or(0)
+}
+
+/// How many parallel compile jobs to run.
+///
+/// Precedence: an explicit `CMAKE_BUILD_PARALLEL_LEVEL` wins (operator override);
+/// otherwise `min(cpus, max(1, RAM_GiB / 3))`. The `/3` reflects that the heavy
+/// Vulkan TUs need ~3 GiB resident each, so a 16 GiB / 6-core BC-250 caps at ~5
+/// and never thrashes. A bare `-j` would have used all 6 and swapped.
+pub fn build_jobs() -> usize {
+    if let Some(n) = std::env::var("CMAKE_BUILD_PARALLEL_LEVEL")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+    {
+        return n;
+    }
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let by_mem = (mem_total_gib() / 3).max(1) as usize;
+    // If meminfo was unreadable (0 -> by_mem 1) don't over-throttle a real box:
+    // fall back to cpus when we have no memory signal.
+    let by_mem = if mem_total_gib() == 0 { cpus } else { by_mem };
+    cpus.min(by_mem).max(1)
+}
+
+// ---------------------------------------------------------------------------
+// Build-dependency preflight - fail in 2s with the exact install command,
+// not 20 min into a compile on a missing header. Shared with `llmtune doctor`.
+// ---------------------------------------------------------------------------
+
+/// What the Vulkan llama.cpp build needs, and how to get it on this distro.
+#[derive(Debug, Clone)]
+pub struct DepReport {
+    /// Reliably-detected missing items (PATH tools + the canonical Vulkan
+    /// header). Non-empty => the compile WILL fail; `ensure()` bails.
+    pub missing: Vec<String>,
+    /// The full, copy-pasteable install command for the detected distro (always
+    /// the complete recommended package set, so heuristics we can't detect - the
+    /// ICD loader, SPIR-V headers - are still covered).
+    pub install_cmd: String,
+}
+
+impl DepReport {
+    /// Bail with the install command if anything reliably-detected is missing.
+    pub fn ensure(&self) -> Result<()> {
+        if self.missing.is_empty() {
+            return Ok(());
+        }
+        bail!(
+            "build toolchain incomplete - missing {}.\n  {}",
+            self.missing.join(", "),
+            self.install_cmd
+        )
+    }
+}
+
+fn dep_in_path(cmd: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|dir| {
+                let p = dir.join(cmd);
+                p.is_file() || p.is_symlink()
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn distro_id() -> String {
+    fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                l.strip_prefix("ID=")
+                    .map(|v| v.trim_matches('"').to_string())
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// The complete per-distro install command for the Vulkan build toolchain.
+/// Lists ALL required packages (compiler, cmake, git, Vulkan headers + ICD
+/// loader, SPIR-V headers, shader compiler) so a working-but-drifted board that
+/// lost a package to a distro update gets one line to fix it.
+fn install_cmd() -> String {
+    match distro_id().as_str() {
+        "arch" | "cachyos" | "endeavouros" | "manjaro" | "garuda" | "artix" => {
+            "install: sudo pacman -S --needed base-devel cmake git vulkan-headers \
+             vulkan-icd-loader spirv-headers shaderc"
+                .into()
+        }
+        "debian" | "ubuntu" | "pop" | "linuxmint" | "raspbian" => {
+            "install: sudo apt install build-essential cmake git libvulkan-dev \
+             glslc spirv-headers"
+                .into()
+        }
+        "fedora" | "rhel" | "centos" | "rocky" | "almalinux" => {
+            "install: sudo dnf install gcc-c++ cmake git vulkan-headers \
+             vulkan-loader-devel glslc spirv-headers"
+                .into()
+        }
+        _ => "install the Vulkan build toolchain for your distro: a C++ compiler, \
+              cmake, git, Vulkan headers + ICD loader, SPIR-V headers, and a \
+              shader compiler (glslc/shaderc)"
+            .into(),
+    }
+}
+
+/// True if any of `candidates` exists on disk (a header dir/file or a library
+/// under one of the common multiarch libdirs).
+fn any_path_exists(candidates: &[&str]) -> bool {
+    candidates.iter().any(|p| Path::new(p).exists())
+}
+
+/// Preflight the build toolchain. Every check here is a RELIABLE, path-based
+/// signal of a package the Vulkan `llama.cpp` build genuinely needs, so a `miss`
+/// means the compile *will* fail - we just turn a 20-min-then-fail into a 2-s
+/// bail with the exact install command. The install command still lists the full
+/// set, so a distro whose layout we don't probe is covered too.
+pub fn check_build_deps() -> DepReport {
+    let mut missing: Vec<String> = Vec::new();
+    if !dep_in_path("git") {
+        missing.push("git".into());
+    }
+    if !dep_in_path("cmake") {
+        missing.push("cmake".into());
+    }
+    if !["c++", "g++", "clang++"].iter().any(|c| dep_in_path(c)) {
+        missing.push("a C++ compiler (g++/clang++)".into());
+    }
+    if !["glslc", "glslangValidator"].iter().any(|c| dep_in_path(c)) {
+        missing.push("glslc/glslangValidator (shaderc)".into());
+    }
+    // The canonical Vulkan header path is identical across distros, so its
+    // absence is a reliable signal (this is what a drifted board typically lost).
+    if !Path::new("/usr/include/vulkan/vulkan.h").exists() {
+        missing.push("Vulkan headers (vulkan/vulkan.h)".into());
+    }
+    // Vulkan ICD loader dev lib - GGML_VULKAN links against it; cmake's
+    // find_package(Vulkan) fails at configure without it.
+    if !any_path_exists(&[
+        "/usr/lib/libvulkan.so",
+        "/usr/lib64/libvulkan.so",
+        "/usr/lib/x86_64-linux-gnu/libvulkan.so",
+        "/usr/lib/aarch64-linux-gnu/libvulkan.so",
+    ]) {
+        missing.push("Vulkan ICD loader (libvulkan.so / vulkan-icd-loader)".into());
+    }
+    // SPIR-V headers - the shader-gen step needs them, and this is the miss that
+    // fails LATE (deep in the compile), so detecting it up front is the whole
+    // point. Header layout is `spirv/unified1/spirv.h` under the include root.
+    if !any_path_exists(&[
+        "/usr/include/spirv/unified1/spirv.h",
+        "/usr/include/spirv/spirv.h",
+        "/usr/include/spirv",
+    ]) {
+        missing.push("SPIR-V headers (spirv/, spirv-headers)".into());
+    }
+    DepReport {
+        missing,
+        install_cmd: install_cmd(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,7 +1000,8 @@ mod tests {
             git_url: "https://example.invalid/llama.cpp".into(),
             git_ref: "master".into(),
             cmake_flags: "-DGGML_VULKAN=ON".into(),
-            out_bins: vec!["llama-server".into(), "rpc-server".into()],
+            // Required set only; the rpc worker is optional (see rpc_present).
+            out_bins: vec!["llama-server".into(), "llama-cli".into()],
         }
     }
 
@@ -805,6 +1033,9 @@ mod tests {
             for b in &spec.out_bins {
                 fs::write(stage.join(b), b"#!fake\n").unwrap();
             }
+            // The rpc worker binary lands under its current upstream name; it is
+            // copied wholesale (not required by out_bins) and drives rpc_present.
+            fs::write(stage.join("ggml-rpc-server"), b"#!fake\n").unwrap();
             // a runtime lib alongside, to mimic real output
             fs::write(stage.join("libggml.so"), b"lib").unwrap();
             Ok(())
@@ -882,7 +1113,10 @@ mod tests {
             assert_eq!(out.action, Action::Built);
             assert_eq!(out.slug, "deadbeefcafe");
             assert!(out.dir.join("llama-server").is_file());
-            assert!(out.dir.join("rpc-server").is_file());
+            assert!(out.dir.join("llama-cli").is_file());
+            // rpc worker copied under its upstream name and reported present.
+            assert!(out.rpc_present);
+            assert!(current_rpc_bin("vulkan").is_some());
             assert_eq!(current_slug("vulkan").as_deref(), Some("deadbeefcafe"));
             // resolution API points at the live binary + dir
             assert!(current_bin("vulkan", "llama-server").is_some());
@@ -1005,6 +1239,32 @@ mod tests {
                 .unwrap_or(0);
             assert_eq!(stage_leftovers, 0, "staging dir must be cleaned up");
         });
+    }
+
+    #[test]
+    fn build_jobs_honors_explicit_env_then_derives() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CMAKE_BUILD_PARALLEL_LEVEL", "2");
+        assert_eq!(build_jobs(), 2, "explicit override must win");
+        std::env::set_var("CMAKE_BUILD_PARALLEL_LEVEL", "0"); // invalid -> ignored
+        assert!(build_jobs() >= 1, "invalid override falls through to derived");
+        std::env::remove_var("CMAKE_BUILD_PARALLEL_LEVEL");
+        assert!(build_jobs() >= 1, "derived count is always positive");
+    }
+
+    #[test]
+    fn rpc_bin_accepts_either_upstream_name() {
+        let d = std::env::temp_dir().join(format!("llmtune-rpc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        assert!(!has_rpc(&d), "no rpc binary yet");
+        // The pre-rename name is still accepted (older pinned builds emit it).
+        fs::write(d.join("rpc-server"), b"x").unwrap();
+        assert!(has_rpc(&d));
+        fs::remove_file(d.join("rpc-server")).unwrap();
+        fs::write(d.join("ggml-rpc-server"), b"x").unwrap();
+        assert!(has_rpc(&d), "current upstream name accepted");
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

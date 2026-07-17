@@ -71,52 +71,6 @@ fn module_loaded(name: &str) -> bool {
     Path::new(&format!("/sys/module/{name}")).exists()
 }
 
-/// Is `cmd` an executable found on `$PATH`?
-fn in_path(cmd: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        let p = dir.join(cmd);
-        p.is_file() || p.is_symlink()
-    })
-}
-
-/// First of several alternative commands found on `$PATH` (e.g. a C++ compiler).
-fn any_in_path(cmds: &[&'static str]) -> Option<&'static str> {
-    cmds.iter().copied().find(|c| in_path(c))
-}
-
-/// Best-effort distro id from /etc/os-release (for an install hint).
-fn distro_id() -> String {
-    std::fs::read_to_string("/etc/os-release")
-        .ok()
-        .and_then(|s| {
-            s.lines().find_map(|l| {
-                l.strip_prefix("ID=")
-                    .map(|v| v.trim_matches('"').to_string())
-            })
-        })
-        .unwrap_or_default()
-}
-
-/// Install hint for the build toolchain, tailored to the detected distro.
-fn deps_hint(missing: &[&str]) -> String {
-    let pkgs = missing.join(" ");
-    match distro_id().as_str() {
-        "arch" | "cachyos" | "endeavouros" | "manjaro" => {
-            "install: sudo pacman -S --needed base-devel cmake git vulkan-headers shaderc".into()
-        }
-        "debian" | "ubuntu" | "pop" | "linuxmint" => {
-            "install: sudo apt install build-essential cmake git libvulkan-dev glslc".into()
-        }
-        "fedora" | "rhel" | "centos" => {
-            "install: sudo dnf install gcc-c++ cmake git vulkan-headers glslc".into()
-        }
-        _ => format!("install the build toolchain for your distro (missing: {pkgs})"),
-    }
-}
-
 fn glob_exists(dir: &str, prefix: &str) -> bool {
     std::fs::read_dir(dir)
         .map(|rd| {
@@ -189,34 +143,24 @@ pub fn run(node: &Node) -> Vec<Check> {
     }
 
     // Build toolchain - what `llmtune build install` needs to compile a Vulkan
-    // llama.cpp. Only relevant on a box that builds its own engine, so a miss is a
-    // Warn (with a per-distro install hint), never a Fail.
+    // llama.cpp. Shares the single source of truth with the build-time preflight
+    // (`build::check_build_deps`), so `doctor` and the actual build agree on what
+    // is required and how to install it. Only relevant on a box that builds its
+    // own engine, so a miss is a Warn (with the exact install command), never a
+    // Fail.
     {
-        let mut missing: Vec<&str> = Vec::new();
-        if !in_path("git") {
-            missing.push("git");
-        }
-        if !in_path("cmake") {
-            missing.push("cmake");
-        }
-        if any_in_path(&["c++", "g++", "clang++"]).is_none() {
-            missing.push("c++");
-        }
-        // glslc (shaderc) compiles the Vulkan compute shaders for the GGML backend.
-        if any_in_path(&["glslc", "glslangValidator"]).is_none() {
-            missing.push("glslc");
-        }
-        if missing.is_empty() {
+        let dep = crate::build::check_build_deps();
+        if dep.missing.is_empty() {
             out.push(Check::new(
                 "build toolchain",
                 Status::Ok,
-                "git, cmake, c++ and a Vulkan shader compiler present",
+                "compiler, cmake, git, Vulkan headers and a shader compiler present",
             ));
         } else {
             out.push(Check::new(
                 "build toolchain",
                 Status::Warn,
-                format!("missing {} - {}", missing.join(", "), deps_hint(&missing)),
+                format!("missing {} - {}", dep.missing.join(", "), dep.install_cmd),
             ));
         }
     }
@@ -307,10 +251,8 @@ pub fn run(node: &Node) -> Vec<Check> {
                 .iter()
                 .filter(|b| crate::build::current_version(b).is_some())
                 .map(|b| {
-                    (
-                        b.to_string(),
-                        crate::build::current_bin(b, "rpc-server").is_some(),
-                    )
+                    // Accept either upstream name (rpc-server / ggml-rpc-server).
+                    (b.to_string(), crate::build::current_rpc_bin(b).is_some())
                 })
                 .collect();
             if let Some(c) = rpc_server_check(&installed) {

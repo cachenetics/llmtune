@@ -89,6 +89,15 @@ pub(crate) fn cmd_build_install(
             println!("       {}", out.dir.display());
         }
     }
+    // Single-node serving works regardless; only cluster (RPC) use needs the
+    // worker binary. Surface its absence as a warning, never an install failure.
+    if !out.rpc_present {
+        println!(
+            "[warn] `{}` has no rpc worker binary - single-node serving is fine, \
+             but this node can't join a cluster (rebuild with -DGGML_RPC=ON)",
+            out.name
+        );
+    }
     Ok(())
 }
 

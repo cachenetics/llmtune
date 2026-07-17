@@ -16,8 +16,18 @@
 name = "vulkan"
 git_url = "https://github.com/ggml-org/llama.cpp"
 # MTP, Vulkan and RPC are all upstream since 2026-05-16 (PR #22673), so one build
-# covers single-node serving, the MTP speculative draft, and RPC clusters. Track
-# master until a BC-250 bless pins a known-good commit.
-ref = "master"
+# covers single-node serving, the MTP speculative draft, and RPC clusters.
+#
+# PINNED, not tracking bare `master`: an unpinned ref means an upstream rename or
+# reorg silently breaks a REINSTALL on a board that was running great (this is
+# exactly how the rpc-server -> ggml-rpc-server rename bit us). This commit is
+# BC-250-blessed: builds clean with the deps below and serves gfx1013. Move it
+# forward deliberately with `llmtune build update vulkan --ref <sha>` after a
+# doctor + bench smoke, never by drifting.
+ref = "86d86ed4396b4130922f7b9af26e3d9fc11a591b"
 cmake_flags = "-DGGML_VULKAN=ON -DGGML_RPC=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release"
-out_bins = ["llama-server", "llama-cli", "rpc-server"]
+# REQUIRED binaries only (install fails only if these are missing). The rpc
+# worker binary (ggml-rpc-server, was rpc-server) is OPTIONAL: it is copied
+# wholesale when built and reported via `rpc_present`, but a single-node box that
+# only serves does not need it, so its absence must never fail the install.
+out_bins = ["llama-server", "llama-cli"]

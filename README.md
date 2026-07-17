@@ -30,6 +30,28 @@ in [arieltune](https://github.com/cachenetics/project-ariel).
   (`llmtune doctor` checks all of this and prints install commands)
 * Rust (stable) to build llmtune itself
 
+### Build prerequisites (Vulkan llama.cpp)
+
+`llmtune build install vulkan` compiles llama.cpp, which needs a C++ toolchain,
+CMake, git, the Vulkan headers + ICD loader, the SPIR-V headers, and a shader
+compiler. Install them in one line for your distro:
+
+```sh
+# Arch / CachyOS / EndeavourOS / Manjaro
+sudo pacman -S --needed base-devel cmake git vulkan-headers vulkan-icd-loader spirv-headers shaderc
+
+# Debian / Ubuntu / Pop!_OS
+sudo apt install build-essential cmake git libvulkan-dev glslc spirv-headers
+
+# Fedora / RHEL
+sudo dnf install gcc-c++ cmake git vulkan-headers vulkan-loader-devel glslc spirv-headers
+```
+
+You do not have to memorize this: `llmtune build install vulkan` (and `llmtune
+doctor`) preflight the toolchain and, if anything is missing, fail in seconds
+naming the exact packages and the install command above, rather than partway
+through a long compile.
+
 ## Install
 
 ```sh
