@@ -80,6 +80,36 @@ Models live in `/var/lib/llmtune/models`; drop `.gguf` files there directly
 or use `llmtune models add`. Run llmtune as your normal user, it uses sudo
 only for the systemd steps.
 
+## Ternary models on the BC-250
+
+Ternary ("Bonsai") builds quantize the weights to ~1.71 bits (`Q2_0`) or ~1 bit
+(`Q1_0`). A 27B ternary is only ~6.6 GiB, so it fits the BC-250's 14 GiB of
+unified memory with room to spare and serves at roughly 17 tok/s decode - a
+model class that a normal `Q4` 27B (17 GiB) cannot even load on this board.
+
+Stock llama.cpp cannot read these quants, so llmtune ships a second build recipe,
+`prism-vulkan` (the [PrismML fork](https://github.com/PrismML-Eng/llama.cpp) with
+the ternary kernels, Vulkan shaders included). It installs and versions
+independently of the stock `vulkan` build, so you can carry either or both:
+
+```sh
+llmtune build install prism-vulkan          # the ternary-capable build
+llmtune build list                          # both builds, side by side
+llmtune models add https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf
+llmtune node load ternary                    # serve it
+```
+
+You do not select the build by hand: llmtune routes by quant. A `Q2_0`/`Q1_0`
+model resolves to the `qwen35-ternary` profile (which launches from
+`prism-vulkan`); a normal `Q4`/`Q8` of the same architecture keeps using the
+stock `vulkan` build. Swapping between a ternary and a normal model is a plain
+`llmtune node load`, and rolling a build back or forward is `llmtune build`.
+
+If you do not use llmtune and just want the fork built, `scripts/build-ternary-bc250.sh`
+builds it natively on the board and prints ready-to-run `llama-server`/`llama-bench`
+commands. (The DSpark speculative drafter is CUDA-only, so on the BC-250's Vulkan
+backend run the plain `Q2_0` model without a drafter.)
+
 ## CLI
 
 ```sh

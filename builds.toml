@@ -31,3 +31,21 @@ cmake_flags = "-DGGML_VULKAN=ON -DGGML_RPC=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYP
 # wholesale when built and reported via `rpc_present`, but a single-node box that
 # only serves does not need it, so its absence must never fail the install.
 out_bins = ["llama-server", "llama-cli"]
+
+[[build]]
+name = "prism-vulkan"
+git_url = "https://github.com/PrismML-Eng/llama.cpp"
+# The PrismML fork adds the ternary Q2_0 / Q1_0 ("Bonsai") quant kernels that
+# stock llama.cpp lacks, INCLUDING the Vulkan shaders (dequant_q2_0.comp), so a
+# ternary 27B loads and serves on the BC-250 (gfx1013). Install this ALONGSIDE
+# `vulkan` (both coexist, each independently versioned + rollback-able) and let
+# the `qwen35-ternary` launch profile route Q2_0/Q1_0 models here; normal quants
+# keep using the stock `vulkan` build. This is a fork pinned to its own history,
+# NOT upstream ggml-org - move the pin forward deliberately after a doctor + bench
+# smoke, never by drifting.
+#
+# BC-250-tested @ 9fcaed7: Q1_0/Q2_0 kernels present, serves gfx1013 via Vulkan
+# (~17 tok/s decode on a 27B ternary). NATIVE=OFF keeps the CPU baseline portable.
+ref = "9fcaed763ccda38ea81068ad9d7f991aaddca451"
+cmake_flags = "-DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release"
+out_bins = ["llama-server", "llama-cli"]

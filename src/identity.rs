@@ -252,7 +252,7 @@ pub fn set_identity_harness(node: &Node) -> Result<(bool, PathBuf)> {
     paths::write_durable(&path, clean.as_bytes())?;
 
     let mut profiles = profile::load()?;
-    let pid = profile::resolve(&profiles, &m.arch).0.id.clone();
+    let pid = profile::resolve(&profiles, &m.arch, m.quant.as_deref()).0.id.clone();
     let p = profiles
         .iter_mut()
         .find(|p| p.id == pid)
@@ -271,7 +271,7 @@ pub fn set_identity_model(node: &Node) -> Result<bool> {
         .ok_or_else(|| anyhow!("no model served - load a model first"))?;
     let m = nodeops::resolve_model(node, &served)?;
     let mut profiles = profile::load()?;
-    let pid = profile::resolve(&profiles, &m.arch).0.id.clone();
+    let pid = profile::resolve(&profiles, &m.arch, m.quant.as_deref()).0.id.clone();
     let p = profiles
         .iter_mut()
         .find(|p| p.id == pid)

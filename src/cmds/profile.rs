@@ -103,7 +103,7 @@ pub(crate) fn cmd_profile_show(cfg: &Config, model: &str, json: bool) -> Result<
     let node = cfg.local_node();
     let m = nodeops::resolve_model(node, model)?;
     let profiles = profile::load()?;
-    let (p, used_default) = profile::resolve(&profiles, &m.arch);
+    let (p, used_default) = profile::resolve(&profiles, &m.arch, m.quant.as_deref());
     let effective = swap::adjust_flags(p, &m);
     if json {
         let (bin, ld) = p.launch();

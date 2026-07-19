@@ -271,7 +271,7 @@ pub(crate) fn cmd_cluster_up(
     let m = nodeops::resolve_model(head, model)?;
     guard_cluster_model(&m)?;
     let profiles = profile::load()?;
-    let (prof, _used_default) = profile::resolve(&profiles, &m.arch);
+    let (prof, _used_default) = profile::resolve(&profiles, &m.arch, m.quant.as_deref());
     let workers = resolve_workers(cfg, &cl.workers)?;
     // Cross-node build parity, BEFORE any worker is touched: mixed llama.cpp
     // versions abort at the RPC handshake with a cryptic "malformed response"

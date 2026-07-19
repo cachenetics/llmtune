@@ -52,6 +52,22 @@ flags = "-c 32768 --parallel 1 --cache-ram 1024 --cache-reuse 256 --flash-attn o
 # BC-250). Weights (~12GiB IQ2) fill most of the 14GiB UMA, so -c is capped at
 # 32768. A qwen35moe WITHOUT MTP tensors fails MTP init -> the swap health-check
 # auto-reverts.
+# qwen35 TERNARY (PrismML "Bonsai" Q2_0 ~1.71-bit / Q1_0 binary quants): these use
+# a custom quant format stock llama.cpp cannot load, so they serve from the
+# `prism-vulkan` build (the PrismML fork) instead of `vulkan`. Gated on quant, so
+# it wins for a Q2_0/Q1_0 qwen35 while a normal Q4/Q8 qwen35 falls through to the
+# stock+MTP profiles below. No MTP flags: the ternary carries no MTP tensors.
+# Install the build once with `llmtune build install prism-vulkan`. A 27B ternary
+# is ~6.6 GiB and runs ~17 tok/s decode on a BC-250 (gfx1013, Vulkan).
+[[profile]]
+id = "qwen35-ternary"
+arch_match = ["qwen35"]
+quant_match = ["q2_0", "q1_0"]
+build = "prism-vulkan"
+bin = "llama-server"
+env = { GGML_VULKAN_DEVICE = "0", GGML_VK_PREFER_HOST_MEMORY = "1" }
+flags = "-c 32768 --parallel 1 --flash-attn on --no-mmap --reasoning off --jinja -ngl 99 -t 4 -ctk q4_0 -ctv q4_0 --cache-ram 0 --ctx-checkpoints 4"
+
 [[profile]]
 id = "qwen35moe"
 arch_match = ["qwen35moe"]

@@ -37,7 +37,7 @@ pub fn list(node: &Node) -> Result<Vec<ModelRow>> {
     Ok(models
         .into_iter()
         .map(|m| {
-            let (p, used_default) = profile::resolve(&profiles, &m.arch);
+            let (p, used_default) = profile::resolve(&profiles, &m.arch, m.quant.as_deref());
             let served = served.as_deref() == Some(m.name.as_str());
             // A per-model override wins over the profile's (guarded) flags.
             let (flags, overridden) = match overrides.get(&m.name) {
@@ -129,7 +129,7 @@ pub fn load(node: &Node, query: &str) -> Result<(swap::SwapOutcome, bool)> {
         );
     }
     let profiles: Vec<Profile> = profile::load()?;
-    let (prof, used_default) = profile::resolve(&profiles, &m.arch);
+    let (prof, used_default) = profile::resolve(&profiles, &m.arch, m.quant.as_deref());
     // A per-model override wins over the profile's memory-guarded flags.
     let mut flags = profile::load_overrides()
         .get(&m.name)
@@ -187,7 +187,7 @@ fn served_meta(node: &Node, model_name: &str) -> (String, Option<String>, String
     let profile_id = if profiles.is_empty() {
         "?".to_string()
     } else {
-        profile::resolve(&profiles, &m.arch).0.id.clone()
+        profile::resolve(&profiles, &m.arch, m.quant.as_deref()).0.id.clone()
     };
     (m.arch, m.quant, profile_id)
 }
@@ -301,7 +301,7 @@ pub fn bench_streaming(
             )
         })?;
     let profiles = profile::load()?;
-    let (prof, _) = profile::resolve(&profiles, &m.arch);
+    let (prof, _) = profile::resolve(&profiles, &m.arch, m.quant.as_deref());
 
     // Resolve llama-bench as a sibling of the profile's llama-server binary. A
     // bare (non-path) server bin means the managed build isn't installed.

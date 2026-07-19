@@ -15,6 +15,13 @@ pub struct Profile {
     /// Architecture-family prefixes this profile matches (empty for `_default`).
     #[serde(default)]
     pub arch_match: Vec<String>,
+    /// Quantization-token prefixes this profile ALSO requires (matched against the
+    /// model's parsed quant, e.g. "Q2_0"). Empty = match any quant. Lets two
+    /// profiles share an architecture but split by quant - e.g. a ternary `Q2_0`
+    /// qwen35 needs the PrismML fork build while a normal `Q4`/`Q8` qwen35 runs on
+    /// stock llama.cpp. List the quant-gated profile BEFORE the un-gated sibling.
+    #[serde(default)]
+    pub quant_match: Vec<String>,
     /// A managed build to launch from (resolved through the build manager's
     /// `current` version). When set, `bin` is the binary NAME within that build
     /// (e.g. "llama-server") and `ld_path` is taken from the build dir. When
@@ -167,18 +174,30 @@ fn validate(profiles: &[Profile]) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a model architecture to a profile by family prefix, in file order,
-/// skipping `_default`. Returns `(profile, used_default)`.
-pub fn resolve<'a>(profiles: &'a [Profile], arch: &str) -> (&'a Profile, bool) {
+/// Resolve a model to a profile by architecture family prefix (and quant, when a
+/// profile gates on it), in file order, skipping `_default`. `quant` is the
+/// model's parsed quant token (e.g. "Q2_0"); pass `None` when unknown. A profile
+/// matches when its `arch_match` prefixes match AND its `quant_match` is empty or
+/// one of its prefixes matches `quant`. Returns `(profile, used_default)`.
+pub fn resolve<'a>(profiles: &'a [Profile], arch: &str, quant: Option<&str>) -> (&'a Profile, bool) {
     let a = arch.to_lowercase();
+    let q = quant.unwrap_or_default().to_lowercase();
     for p in profiles {
         if p.id == "_default" {
             continue;
         }
-        if p.arch_match
+        let arch_ok = p
+            .arch_match
             .iter()
-            .any(|m| a.starts_with(&m.to_lowercase()))
-        {
+            .any(|m| a.starts_with(&m.to_lowercase()));
+        if !arch_ok {
+            continue;
+        }
+        let quant_ok = p.quant_match.is_empty()
+            || p.quant_match
+                .iter()
+                .any(|m| q.starts_with(&m.to_lowercase()));
+        if quant_ok {
             return (p, false);
         }
     }
@@ -208,12 +227,31 @@ mod tests {
     fn moe_resolves_before_dense() {
         let ps = seed();
         // qwen35moe must win over qwen35 for an a3b moe arch.
-        let (p, used) = resolve(&ps, "qwen35moe");
+        let (p, used) = resolve(&ps, "qwen35moe", None);
         assert_eq!(p.id, "qwen35moe");
         assert!(!used);
-        let (p, used) = resolve(&ps, "qwen35");
+        let (p, used) = resolve(&ps, "qwen35", None);
         assert_eq!(p.id, "qwen35");
         assert!(!used);
+    }
+
+    #[test]
+    fn ternary_quant_routes_to_prism_build() {
+        let ps = seed();
+        // A ternary Q2_0 qwen35 must hit the quant-gated prism profile...
+        let (p, used) = resolve(&ps, "qwen35", Some("Q2_0"));
+        assert_eq!(p.id, "qwen35-ternary");
+        assert_eq!(p.build.as_deref(), Some("prism-vulkan"));
+        assert!(!p.flags.contains("draft-mtp")); // ternary has no MTP tensors
+        assert!(!used);
+        // ...while a normal Q4 qwen35 falls through to the stock+MTP profile.
+        let (p, used) = resolve(&ps, "qwen35", Some("Q4_K_XL"));
+        assert_eq!(p.id, "qwen35");
+        assert_eq!(p.build.as_deref(), Some("vulkan"));
+        assert!(!used);
+        // Q1_0 (binary bonsai) also routes to prism.
+        let (p, _) = resolve(&ps, "qwen35", Some("Q1_0"));
+        assert_eq!(p.id, "qwen35-ternary");
     }
 
     #[test]
@@ -250,10 +288,10 @@ mod tests {
     #[test]
     fn family_prefix_and_fallback() {
         let ps = seed();
-        let (p, used) = resolve(&ps, "gemma3");
+        let (p, used) = resolve(&ps, "gemma3", None);
         assert_eq!(p.id, "gemma");
         assert!(!used);
-        let (p, used) = resolve(&ps, "phi4");
+        let (p, used) = resolve(&ps, "phi4", None);
         assert_eq!(p.id, "_default");
         assert!(used);
     }
