@@ -518,6 +518,10 @@ pub struct ReachReport {
     pub local: Vec<PortCheck>,
     pub remote_host: Option<String>,
     pub remote: Vec<PortCheck>,
+    /// For each `local` port that failed to connect, what `ss` says already
+    /// owns it (port -> "comm pid N"). Empty unless a dead port has an
+    /// identifiable incumbent - see [`diagnose`]'s `PortInUse` branch.
+    pub busy: Vec<(u16, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -531,6 +535,9 @@ pub enum Verdict {
     Interference(Vec<u16>),
     /// Not even listening locally - a service problem, not a firewall one.
     NotListening(Vec<u16>),
+    /// Not even listening locally because something ELSE already owns the
+    /// port (port -> "comm pid N") - a config problem, not a dead service.
+    PortInUse(Vec<(u16, String)>),
 }
 
 impl Verdict {
@@ -540,6 +547,7 @@ impl Verdict {
             Verdict::LocalOnlyUnproven => "local-only-unproven",
             Verdict::Interference(_) => "interfering-firewall",
             Verdict::NotListening(_) => "not-listening",
+            Verdict::PortInUse(_) => "port-in-use",
         }
     }
 }
@@ -548,6 +556,23 @@ impl Verdict {
 pub fn diagnose(r: &ReachReport, backend: Backend) -> (Verdict, String) {
     let dead_local: Vec<u16> = r.local.iter().filter(|c| !c.ok).map(|c| c.port).collect();
     if !dead_local.is_empty() {
+        let owned: Vec<(u16, String)> = dead_local
+            .iter()
+            .filter_map(|p| r.busy.iter().find(|(bp, _)| bp == p).cloned())
+            .collect();
+        if !owned.is_empty() {
+            let desc = owned
+                .iter()
+                .map(|(p, who)| format!(":{p} ({who})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let msg = format!(
+                "{desc} already in use by another process - set a different \
+                 `http_port` in [netboot] (fleet.toml), re-run `netboot init \
+                 --apply`, then `netboot up`"
+            );
+            return (Verdict::PortInUse(owned), msg);
+        }
         let msg = format!(
             "not listening on {} even locally - a service is down (check \
              `systemctl status {HTTP_UNIT} nfs-server`), not a firewall problem",
@@ -714,6 +739,14 @@ pub fn reach_ports(nb: &Netboot) -> Vec<u16> {
 pub fn reach_check(cfg: &Config, nb: &Netboot) -> ReachReport {
     let tcp_ports: Vec<u16> = reach_ports(nb);
     let local = local_checks(&nb.server_ip, &tcp_ports);
+    // Only worth asking `ss` about ports that already failed to connect -
+    // the happy path never pays for it.
+    let busy: Vec<(u16, String)> = local
+        .iter()
+        .filter(|c| !c.ok)
+        .filter_map(|c| port_owner(c.port))
+        .map(|o| (o.port, format!("{} pid {}", o.comm, o.pid)))
+        .collect();
     let (remote_host, remote) = match pick_probe_node(cfg, nb) {
         Some(node) => {
             let host = node.host.clone().unwrap_or_default();
@@ -726,7 +759,62 @@ pub fn reach_check(cfg: &Config, nb: &Netboot) -> ReachReport {
         local,
         remote_host,
         remote,
+        busy,
     }
+}
+
+/// A process already bound to a port, as `ss -ltnp` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortOwner {
+    pub port: u16,
+    pub pid: u32,
+    pub comm: String,
+}
+
+/// Parse `ss -ltnp` output into its LISTEN entries. Pure. Matches on port
+/// only, regardless of local address: a process bound to `127.0.0.1:P`
+/// still fails a later wildcard `0.0.0.0:P` bind with EADDRINUSE (Linux
+/// treats them as conflicting), so it is just as much "the thing already on
+/// this port" as a wildcard incumbent would be. A LISTEN line with no
+/// `Process` column (ss lacks permission to name it) is skipped, not
+/// treated as absence - see [`port_owner`].
+pub fn parse_ss_listen(text: &str) -> Vec<PortOwner> {
+    text.lines()
+        .filter_map(|l| {
+            let fields: Vec<&str> = l.split_whitespace().collect();
+            if fields.first() != Some(&"LISTEN") {
+                return None;
+            }
+            let port: u16 = fields.get(3)?.rsplit(':').next()?.parse().ok()?;
+            let proc_field = fields.get(5)?;
+            let pid: u32 = proc_field
+                .split("pid=")
+                .nth(1)?
+                .split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse()
+                .ok()?;
+            let comm = proc_field
+                .split_once("(\"")
+                .and_then(|(_, r)| r.split_once('"'))
+                .map(|(name, _)| name.to_string())?;
+            Some(PortOwner { port, pid, comm })
+        })
+        .collect()
+}
+
+/// Best-effort: what already owns `port`, if anything and if nameable.
+/// Deliberately unprivileged - unprivileged `ss` only names same-user
+/// sockets, which covers the reported case (another local model server run
+/// as the same user); a differently-owned incumbent just falls back to the
+/// existing generic "service is down" message rather than forcing a sudo
+/// prompt on a check that runs ahead of any privileged work. A missing `ss`
+/// binary degrades the same way (`Command::output` errors, `.ok()?` -> None).
+pub(crate) fn port_owner(port: u16) -> Option<PortOwner> {
+    let out = std::process::Command::new("ss").args(["-ltnp"]).output().ok()?;
+    parse_ss_listen(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .find(|o| o.port == port)
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +1023,24 @@ pub fn up(cfg: &Config, opts: &UpOpts) -> Result<()> {
     if nb.dnsmasq && !have_cmd("dnsmasq") {
         bail!("[netboot] dnsmasq = true but dnsmasq is not installed");
     }
+    // A stopped HTTP_UNIT is about to bind http_port; if something else
+    // already owns it, `systemctl enable --now` will "succeed" (systemd
+    // starts a unit that immediately fails on EADDRINUSE) and the failure
+    // only surfaces later as a misleading "service is down" self-check
+    // verdict. Catch it here, before NFS/firewall setup, with the real
+    // cause. An already-active HTTP_UNIT is exempt - that is OUR bind.
+    if is_active(HTTP_UNIT) != "active" {
+        if let Some(owner) = port_owner(nb.http_port) {
+            bail!(
+                "netboot http_port {} is already in use by {} (pid {}) - set \
+                 a different `http_port` in [netboot] (fleet.toml), then \
+                 `netboot init --apply` before `up`",
+                nb.http_port,
+                owner.comm,
+                owner.pid
+            );
+        }
+    }
 
     // 1. Services: record what was ALREADY running/enabled so `down` only
     // reverses what this `up` changed.
@@ -1041,10 +1147,11 @@ pub fn up(cfg: &Config, opts: &UpOpts) -> Result<()> {
     }
     match verdict {
         Verdict::Ok | Verdict::LocalOnlyUnproven => Ok(()),
-        Verdict::Interference(_) | Verdict::NotListening(_) => {
+        Verdict::Interference(_) | Verdict::NotListening(_) | Verdict::PortInUse(_) => {
             // A refusal, not an error: the stack is up but unproven from
-            // off-host (an interfering firewall / nothing listening); `down`
-            // reverses it, --skip-check overrides. Exit code 2.
+            // off-host (an interfering firewall / nothing listening / the
+            // port is somebody else's); `down` reverses it, --skip-check
+            // overrides. Exit code 2.
             Err(crate::agentic::refusal(format!(
                 "netboot up: reachability self-check failed - {msg} \
                  (fix the interference and re-run, or --skip-check to accept unproven)"
@@ -1968,6 +2075,7 @@ mod tests {
             local: vec![ck(8090, true), ck(2049, true)],
             remote_host: Some("node-a (198.51.100.82)".into()),
             remote: vec![ck(8090, true), ck(2049, true)],
+            busy: vec![],
         };
         let (v, msg) = diagnose(&r, Backend::Ufw);
         assert_eq!(v, Verdict::Ok);
@@ -1981,6 +2089,7 @@ mod tests {
             local: vec![ck(8090, true), ck(2049, true)],
             remote_host: Some("node-a (198.51.100.82)".into()),
             remote: vec![ck(8090, false), ck(2049, true)],
+            busy: vec![],
         };
         let (v, msg) = diagnose(&r, Backend::Ufw);
         assert_eq!(v, Verdict::Interference(vec![8090]));
@@ -2000,6 +2109,7 @@ mod tests {
             local: vec![ck(8090, true)],
             remote_host: None,
             remote: vec![],
+            busy: vec![],
         };
         let (v, msg) = diagnose(&r, Backend::None);
         assert_eq!(v, Verdict::LocalOnlyUnproven);
@@ -2012,6 +2122,7 @@ mod tests {
             local: vec![ck(8090, true)],
             remote_host: Some("node-a".into()),
             remote: vec![],
+            busy: vec![],
         };
         assert_eq!(diagnose(&r2, Backend::None).0, Verdict::LocalOnlyUnproven);
     }
@@ -2022,6 +2133,7 @@ mod tests {
             local: vec![ck(8090, false), ck(2049, true)],
             remote_host: Some("node-a".into()),
             remote: vec![ck(8090, false), ck(2049, true)],
+            busy: vec![],
         };
         let (v, msg) = diagnose(&r, Backend::Ufw);
         assert_eq!(v, Verdict::NotListening(vec![8090]));
@@ -2029,6 +2141,48 @@ mod tests {
             msg.contains("service is down") && !msg.contains("INTERFERING"),
             "service problem, not firewall: {msg}"
         );
+    }
+
+    #[test]
+    fn diagnose_flags_port_in_use_over_generic_service_down() {
+        // The reported bug: EADDRINUSE from an unrelated process reads as a
+        // dead service unless something goes looking for who else is there.
+        let r = ReachReport {
+            local: vec![ck(8090, false), ck(2049, true)],
+            remote_host: Some("node-a".into()),
+            remote: vec![ck(8090, false), ck(2049, true)],
+            busy: vec![(8090, "llama-server pid 1201185".into())],
+        };
+        let (v, msg) = diagnose(&r, Backend::Ufw);
+        assert_eq!(
+            v,
+            Verdict::PortInUse(vec![(8090, "llama-server pid 1201185".into())])
+        );
+        assert!(msg.contains("llama-server pid 1201185"), "{msg}");
+        assert!(msg.contains("already in use"), "{msg}");
+        assert!(!msg.contains("service is down"), "{msg}");
+    }
+
+    #[test]
+    fn parse_ss_listen_finds_owner_regardless_of_bind_address() {
+        let out = "State  Recv-Q Send-Q    Local Address:Port    Peer Address:Port Process\n\
+                    LISTEN 0      4096          127.0.0.1:8090         0.0.0.0:*     users:((\"llama-server\",pid=1201185,fd=7))\n\
+                    LISTEN 0      511               0.0.0.0:22           0.0.0.0:*     users:((\"sshd\",pid=812,fd=3))\n";
+        let owners = parse_ss_listen(out);
+        assert_eq!(
+            owners,
+            vec![
+                PortOwner { port: 8090, pid: 1201185, comm: "llama-server".into() },
+                PortOwner { port: 22, pid: 812, comm: "sshd".into() },
+            ]
+        );
+        // A header line, a non-LISTEN state, and a line with no Process
+        // column (ss lacking permission to name it) are all skipped, not
+        // misparsed.
+        let noisy = "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n\
+                      ESTAB  0      0         10.0.0.5:22           10.0.0.9:5133 users:((\"sshd\",pid=1,fd=4))\n\
+                      LISTEN 0      128           0.0.0.0:111           0.0.0.0:*\n";
+        assert!(parse_ss_listen(noisy).is_empty());
     }
 
     #[test]
@@ -2074,6 +2228,7 @@ mod tests {
             local: vec![ck(8090, true)],
             remote_host: Some("node-a (198.51.100.82)".into()),
             remote: vec![ck(8090, false)],
+            busy: vec![],
         };
         let (v, msg) = diagnose(&r, Backend::Ufw);
         let val = reach_json_value(&r, &v, &msg);
@@ -2108,6 +2263,7 @@ mod tests {
             local: vec![ck(8090, true)],
             remote_host: None,
             remote: vec![],
+            busy: vec![],
         };
         let (verdict, msg) = diagnose(&r, Backend::None);
         let v = up_summary_json(&st, Some(reach_json_value(&r, &verdict, &msg)));

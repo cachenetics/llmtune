@@ -309,7 +309,13 @@ pub struct InitOpts {
 
 /// The `netboot init --json` payload; preview and apply share the shape
 /// (`applied` says whether the files were written). Pure for the unit test.
-pub fn init_json(applied: bool, dnsmasq: &str, exports: &str, unit: &str) -> serde_json::Value {
+pub fn init_json(
+    applied: bool,
+    dnsmasq: &str,
+    exports: &str,
+    unit: &str,
+    port_warning: Option<&str>,
+) -> serde_json::Value {
     serde_json::json!({
         "applied": applied,
         "files": [
@@ -322,6 +328,7 @@ pub fn init_json(applied: bool, dnsmasq: &str, exports: &str, unit: &str) -> ser
         } else {
             "re-run with --apply to write these files (sudo) and reload"
         },
+        "port_warning": port_warning,
     })
 }
 
@@ -345,10 +352,24 @@ pub fn init(cfg: &crate::config::Config, opts: &InitOpts) -> Result<()> {
     let dnsmasq = dnsmasq_conf(nb);
     let exports = nfs_exports(nb);
     let unit = http_unit(&exe, &user, nb.http_port, opts.config.as_deref());
+    // Advisory only - nothing binds until `netboot up` runs - but a bad
+    // port is cheaper to catch here than after writing config and starting
+    // services (see netboot_server::port_owner and the `up` preflight).
+    let port_warning = crate::netboot_server::port_owner(nb.http_port).map(|o| {
+        format!(
+            "http_port {} is already in use by {} (pid {}) - the boot server \
+             will fail to bind until you change [netboot] http_port in \
+             fleet.toml or free that port",
+            nb.http_port, o.comm, o.pid
+        )
+    });
 
     if !opts.apply {
         if opts.json {
-            println!("{}", init_json(false, &dnsmasq, &exports, &unit));
+            println!(
+                "{}",
+                init_json(false, &dnsmasq, &exports, &unit, port_warning.as_deref())
+            );
             return Ok(());
         }
         println!("== {DNSMASQ_CONF} ==\n{dnsmasq}");
@@ -363,6 +384,9 @@ pub fn init(cfg: &crate::config::Config, opts: &InitOpts) -> Result<()> {
             kernel = nb.kernel,
             initrd = nb.initrd,
         );
+        if let Some(w) = &port_warning {
+            println!("\n[warn] {w}");
+        }
         return Ok(());
     }
 
@@ -394,9 +418,15 @@ pub fn init(cfg: &crate::config::Config, opts: &InitOpts) -> Result<()> {
     crate::swap::sudo(&["systemctl", "daemon-reload"])?;
     crate::swap::sudo(&["exportfs", "-ra"])?;
     if opts.json {
-        println!("{}", init_json(true, &dnsmasq, &exports, &unit));
+        println!(
+            "{}",
+            init_json(true, &dnsmasq, &exports, &unit, port_warning.as_deref())
+        );
     } else {
         println!("[ok] wrote configs + unit. Start the stack with `llmtune netboot up`.");
+        if let Some(w) = &port_warning {
+            println!("[warn] {w}");
+        }
     }
     Ok(())
 }
@@ -1401,7 +1431,7 @@ mod tests {
 
     #[test]
     fn init_json_shape_carries_all_three_files() {
-        let v = init_json(false, "dns cfg", "exp cfg", "unit cfg");
+        let v = init_json(false, "dns cfg", "exp cfg", "unit cfg", None);
         assert_eq!(v["applied"], serde_json::Value::Bool(false));
         let files = v["files"].as_array().unwrap();
         assert_eq!(files.len(), 3);
@@ -1413,9 +1443,11 @@ mod tests {
             .unwrap()
             .ends_with(&format!("/{HTTP_UNIT}")));
         assert!(v["next"].as_str().unwrap().contains("--apply"));
-        let v = init_json(true, "a", "b", "c");
+        assert!(v["port_warning"].is_null());
+        let v = init_json(true, "a", "b", "c", Some("http_port 8090 is busy"));
         assert_eq!(v["applied"], serde_json::Value::Bool(true));
         assert!(v["next"].as_str().unwrap().contains("netboot up"));
+        assert_eq!(v["port_warning"], "http_port 8090 is busy");
     }
 
     #[test]

@@ -132,7 +132,8 @@ cleanly. The full non-interactive fleet recipe is
 
 Point llmtune at a rack. It stands up a proxyDHCP/NFS/HTTP boot server,
 builds a diskless image, netboots each board, and registers them as SSH
-nodes in `~/.config/llmtune/fleet.toml`:
+nodes in `~/.config/llmtune/fleet.toml`. Full walkthrough, architecture,
+and known gotchas: [docs/netboot.md](docs/netboot.md).
 
 ```sh
 llmtune netboot init --apply         # dnsmasq + NFS export + boot server
