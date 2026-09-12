@@ -458,8 +458,10 @@ pub(crate) enum ModelsCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum NetbootCmd {
-    /// Generate the proxyDHCP dnsmasq config, the NFS export, and the artifact-
-    /// server unit. Previews everything; pass --apply to write + reload.
+    /// First netboot step after installing llmtune: generate the proxyDHCP
+    /// dnsmasq config, the NFS export, and the artifact-server unit. Run this
+    /// before `image build` / `up`. Previews everything; pass --apply to
+    /// write + reload.
     Init {
         /// Write the files (sudo) and reload, instead of previewing.
         #[arg(long)]

@@ -62,6 +62,11 @@ the systemd unit) are pure functions - `llmtune netboot init` always
 
 ## Walkthrough
 
+Run `netboot init` as the first command after installing llmtune on the
+control host - it reads `[netboot]` from fleet.toml (auto-detecting
+interface/server_ip/subnet when omitted, per Prerequisites above) and
+generates the dnsmasq/NFS/systemd config everything else below builds on.
+
 ```sh
 llmtune netboot init --apply         # write dnsmasq.d/NFS-export/systemd-unit config, reload
 llmtune netboot image build --apply  # build the diskless image (see "Image build" below)
