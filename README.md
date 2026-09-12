@@ -20,7 +20,10 @@ It runs in two shapes:
   every node.
 
 Hardware tuning for the board (BIOS settings, memory timings, clocks) lives
-in [arieltune](https://github.com/cachenetics/project-ariel).
+in [arieltune](https://github.com/cachenetics/project-ariel). New board, nothing
+set up yet: [docs/bc250-complete-bringup.md](docs/bc250-complete-bringup.md)
+walks fresh CachyOS through arieltune liberation to serving a model here,
+start to finish.
 
 ## Requirements
 
