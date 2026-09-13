@@ -617,7 +617,9 @@ fn collect_dropins_in(dirs: &[(PathBuf, bool)]) -> (Vec<PathBuf>, Vec<String>) {
 }
 
 /// Split a unit's drop-in dir into (llmtune-owned paths, foreign filenames).
-/// Drop-ins are world-readable, so no sudo is needed to read them.
+/// Drop-ins carrying a secret are written 0600 root-owned (`sudo_tee_secret`
+/// tightens ALL of them, not just the ones with an embedded key - see
+/// `read_dropin`), so classification needs the same privileged read.
 fn scan_dropins(dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
     let mut ours = Vec::new();
     let mut foreign = Vec::new();
@@ -627,10 +629,7 @@ fn scan_dropins(dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
             if p.extension().and_then(|x| x.to_str()) != Some("conf") {
                 continue;
             }
-            if std::fs::read_to_string(&p)
-                .unwrap_or_default()
-                .contains(MARKER)
-            {
+            if read_dropin(&p).contains(MARKER) {
                 ours.push(p);
             } else {
                 foreign.push(e.file_name().to_string_lossy().into_owned());
@@ -638,6 +637,25 @@ fn scan_dropins(dir: &Path) -> (Vec<PathBuf>, Vec<String>) {
         }
     }
     (ours, foreign)
+}
+
+/// Read a drop-in's content, escalating via `sudo cat` when not already root.
+/// Drop-ins are written 0600 root-owned (`sudo_tee_secret`, unconditionally -
+/// even when they carry no secret), so a plain unprivileged
+/// `std::fs::read_to_string` silently returns empty on permission denied.
+/// Feeding that into a `MARKER` check misclassifies llmtune's own drop-in as
+/// foreign, which leaves it un-removed and makes `winning_name` stack another
+/// `z-llmtune` segment on top of it every restage.
+fn read_dropin(path: &Path) -> String {
+    if is_root() {
+        return std::fs::read_to_string(path).unwrap_or_default();
+    }
+    Command::new("sudo")
+        .args(["cat", &path.to_string_lossy()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default()
 }
 
 /// A drop-in filename guaranteed to sort lexicographically AFTER every foreign
@@ -796,7 +814,7 @@ impl Actuator for SystemdActuator {
         // Remove any existing llmtune drop-ins; back up the first to restore on rollback.
         for (i, p) in ours.iter().enumerate() {
             if i == 0 {
-                let content = std::fs::read_to_string(p).unwrap_or_default();
+                let content = read_dropin(p);
                 let _ = sudo(&["mkdir", "-p", &self.backup_dir.to_string_lossy()]);
                 let _ = sudo_tee_secret(
                     &self.backup_dir.join(format!("{unit}.dropin.prev")),
