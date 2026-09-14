@@ -2508,7 +2508,7 @@ mod tests {
     fn fleet_rail_card_shows_telemetry_and_model() {
         // The SELECTED node's rail card is expanded: full telemetry + detail.
         let app = fleet_app_n(2);
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(txt.contains("2230 MHz"), "card shows the GPU clock");
@@ -2521,7 +2521,7 @@ mod tests {
         // selecting the remote node: its expanded card carries the IP + transport
         let mut app = fleet_app_n(2);
         app.sel = 1;
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(txt.contains("192.0.2.11"), "card shows the node IP: {txt}");
@@ -2536,7 +2536,7 @@ mod tests {
         let render = |sel: usize| -> String {
             let mut app = fleet_app_n(12);
             app.sel = sel;
-            let mut term = Terminal::new(TestBackend::new(90, 24)).unwrap();
+            let mut term = Terminal::new(TestBackend::new(110, 24)).unwrap();
             term.draw(|f| draw_fleet(f, &app)).unwrap();
             buf_text(&term)
         };
@@ -2554,7 +2554,7 @@ mod tests {
         // on a tall terminal all 12 cards fit at once (12 x 4 rows + chrome)
         let mut app = fleet_app_n(12);
         app.sel = 0;
-        let mut term = Terminal::new(TestBackend::new(90, 60)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(110, 60)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let tall = buf_text(&term);
         assert!(tall.contains("node-00") && tall.contains("node-11"));
@@ -2894,7 +2894,7 @@ mod tests {
     fn fleet_expanded_card_renders_uma_mem() {
         // No mem fields on the wire (older node / non-BC250): dim n/a, no crash.
         let app = fleet_app_n(1);
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(
@@ -2912,7 +2912,7 @@ mod tests {
         for v in [40.0, 55.0, 66.0] {
             app.cards[0].mem_hist.push(v);
         }
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(txt.contains("10.1 / 15.3 GiB"), "mem used/total: {txt}");
@@ -3017,7 +3017,7 @@ mod tests {
         // compact: a full 12-node chassis fits one 24-row screen, one line each
         let mut app = fleet_app_n(12);
         app.compact = true;
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(
@@ -3030,7 +3030,7 @@ mod tests {
         );
         // expanded on the same screen: the last cards scroll off instead
         app.compact = false;
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         assert!(!buf_text(&term).contains("node-11"));
     }
@@ -3042,7 +3042,7 @@ mod tests {
         let mut app = fleet_app_n(12);
         app.compact = true;
         app.sel = 11;
-        let mut term = Terminal::new(TestBackend::new(100, 11)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 11)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(txt.contains("node-11"), "selected row scrolled into view");
@@ -3105,14 +3105,14 @@ mod tests {
         app.cards[1].loading = Some("m.gguf".into());
         // the expanded (selected) card carries a labelled loading row
         app.sel = 1;
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(txt.contains("loading"), "loading row label");
         assert!(txt.contains("m.gguf..."), "loading row names the model");
         // compact row too
         app.compact = true;
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         assert!(buf_text(&term).contains("loading m.gguf"));
     }
@@ -3505,14 +3505,14 @@ mod tests {
         // model list keep their natural widths; the card absorbs all extra
         // width and height.
         let rail_pref = 36u16;
-        let small = fleet::main_rects(Rect::new(0, 0, 100, 24), rail_pref);
-        let big = fleet::main_rects(Rect::new(0, 0, 160, 50), rail_pref);
+        let small = fleet::main_rects(Rect::new(0, 0, 110, 24), rail_pref);
+        let big = fleet::main_rects(Rect::new(0, 0, 170, 50), rail_pref);
         let (rail_s, list_s, card_s) = (small.0.unwrap(), small.1.unwrap(), small.2);
         let (rail_b, list_b, card_b) = (big.0.unwrap(), big.1.unwrap(), big.2);
         assert_eq!(rail_s.width, rail_b.width, "rail width is natural/fixed");
         assert_eq!(rail_s.width, 36, "rail sits at its content width");
         assert_eq!(list_s.width, list_b.width, "list width is fixed");
-        assert_eq!(list_s.width, 22, "list sits at its fixed nominal width");
+        assert_eq!(list_s.width, 42, "list sits at its fixed nominal width");
         assert_eq!(
             card_b.width - card_s.width,
             60,
@@ -3534,13 +3534,13 @@ mod tests {
     }
 
     #[test]
-    fn cockpit_rail_sizes_to_content_list_stays_fixed_and_truncates() {
+    fn cockpit_rail_sizes_to_content_list_stays_fixed() {
         // A long served-model name still widens the RAIL so the `served` row
         // shows it in FULL - the operator saw it truncated at the old fixed
         // 34-col rail width. The model LIST no longer sizes to content
         // though (operator call, 2026-09-14, after community back-and-forth
         // on list-vs-card width priority in aibc250): it stays at its fixed
-        // nominal width and ellipsis-truncates instead of growing - the full
+        // nominal width regardless of what's in the library - the full
         // name's source of truth is the rail/card, not the list.
         let long = "LFM2.5-8B-A1B-UD-IQ4_NL.gguf"; // 28 cols
         let mut c = cockpit_n(1);
@@ -3552,25 +3552,25 @@ mod tests {
         assert_eq!(pref, 44, "rail width derived from the served row");
         let (rail, list, card) = fleet::main_rects(Rect::new(0, 0, 140, 30), pref);
         assert_eq!(rail.unwrap().width, 44, "rail grew to fit the served row");
-        assert_eq!(list.unwrap().width, 22, "list stays at its fixed width");
-        assert_eq!(card.width, 140 - 44 - 22, "the card gets the rest");
-        // the fixed list column is too narrow for this 28-char name (that's
-        // the point - it's not sized to fit it), so it renders truncated
-        // there while the rail (content-sized) and card (elastic) still show
-        // it in full
+        assert_eq!(list.unwrap().width, 42, "list stays at its fixed width");
+        assert_eq!(card.width, 140 - 44 - 42, "the card gets the rest");
+        // a 28-char name (typical for this community) comfortably fits the
+        // fixed list column at 42 too - it renders untruncated in rail, list,
+        // AND card alike (the list being fixed-width doesn't mean everything
+        // in it truncates; see cockpit_models_list_truncates_long_names_with_ellipsis
+        // for a name that genuinely doesn't fit)
         let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
         term.draw(|f| draw_cockpit(f, &c.view())).unwrap();
         let txt = buf_text(&term);
         assert_eq!(
             txt.matches(long).count(),
-            2,
-            "full name in rail + card only, list truncates it: {txt}"
+            3,
+            "full name in rail + list + card: {txt}"
         );
-        assert!(txt.contains('…'), "the list shows an ellipsis: {txt}");
         // wider terminal: rail/list hold their fixed widths, the card grows
         let (rail_b, list_b, card_b) = fleet::main_rects(Rect::new(0, 0, 190, 30), pref);
         assert_eq!(rail_b.unwrap().width, 44);
-        assert_eq!(list_b.unwrap().width, 22);
+        assert_eq!(list_b.unwrap().width, 42);
         assert_eq!(card_b.width, card.width + 50, "extra width -> the card");
         // a pathological served-model name still hits the RAIL's cap instead
         // of eating the screen; the list's width doesn't depend on any name
@@ -3582,7 +3582,7 @@ mod tests {
         assert_eq!(rail_c.unwrap().width, 56);
         assert_eq!(
             list_c.unwrap().width,
-            22,
+            42,
             "list width is independent of name length"
         );
         // shorter content sizes down toward the RAIL_W floor
@@ -3952,7 +3952,7 @@ mod tests {
         assert!(!fleet::alert_flags(&app.cards[0], &app.alerts_cfg).down);
         // the real bench-window shape (server down => /props gone => no served)
         app.cards[0].status.served = None;
-        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
         term.draw(|f| draw_fleet(f, &app)).unwrap();
         let txt = buf_text(&term);
         assert!(!txt.contains("ALERT"), "{txt}");

@@ -34,10 +34,16 @@ const RAIL_MAX: u16 = 56;
 /// The model list's fixed nominal width - NOT content-derived (a single long
 /// filename used to drive this pane wide at the card's expense; the list is
 /// for browsing/selection, the full name lives in the card, and `draw_models`
-/// now ellipsis-truncates instead of letting ratatui hard-clip). Operator
-/// call (2026-09-14) after community back-and-forth on list-vs-card width
-/// priority in aibc250.
-const MODELS_W: u16 = 22;
+/// ellipsis-truncates instead of letting ratatui hard-clip). Operator call
+/// (2026-09-14) after community back-and-forth on list-vs-card width
+/// priority in aibc250 - a first attempt landed on 22, which truncated
+/// nearly every real filename (typical names in this community run
+/// 21-34 chars) and multiple community members pushed back that it was
+/// worse than the original. 42 comfortably fits names up to ~34 chars
+/// (mark + space + chrome included); only genuinely long ones still
+/// ellipsize, which is the actual goal - a sane middle ground, not either
+/// extreme.
+const MODELS_W: u16 = 42;
 /// The model card never gets fewer columns than this.
 const CARD_MIN: u16 = 30;
 /// Minimum usable model-list width before it collapses into the card.

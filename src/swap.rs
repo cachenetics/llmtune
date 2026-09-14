@@ -725,26 +725,19 @@ fn tui_active() -> bool {
     TUI_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// True if `sudo -n true` would succeed - a cached credential timestamp or a
-/// NOPASSWD sudoers rule already covers us, so the real call is guaranteed
-/// non-interactive regardless of context. `-n` never prompts; a failure here
-/// is just "would need a password", not an error to propagate.
-fn sudo_cached() -> bool {
-    Command::new("sudo")
-        .args(["-n", "true"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Pure decision: refuse rather than risk an interactive sudo prompt. Only
-/// when BOTH the TUI owns the terminal AND sudo doesn't already have a
-/// cached credential/NOPASSWD rule - plain CLI usage (`llmtune node load
-/// ...` from a shell, no TUI involved) is unaffected; prompting there works
-/// exactly as it always has. Separated from `sudo` so it unit-tests without
-/// a real subprocess.
-fn refuse_interactive_sudo(tui_active: bool, sudo_cached: bool) -> bool {
-    tui_active && !sudo_cached
+/// True when `sudo` should never be allowed to prompt on THIS call: the TUI
+/// owns the terminal, so a prompt has nowhere safe to go (see `TUI_ACTIVE`).
+/// Pure (unit-tested) - the actual non-interactivity is enforced atomically
+/// by passing `-n` on the SAME invocation that runs the real command (below),
+/// not by a separate check-then-call probe: an earlier version ran `sudo -n
+/// true` first and, if that succeeded, ran the real command without `-n`,
+/// trusting the credential was still cached a moment later - a real
+/// TOCTOU gap, and exactly the failure mode reported live in aibc250
+/// (Scent, 2026-09-14) after the first fix shipped: the prompt still got
+/// through. `-n` on the one call sudo actually runs makes a prompt
+/// impossible regardless of timing.
+fn must_be_noninteractive(tui_active: bool) -> bool {
+    tui_active
 }
 
 /// Run a privileged command: directly when already root, via sudo otherwise.
@@ -758,25 +751,32 @@ fn refuse_interactive_sudo(tui_active: bool, sudo_cached: bool) -> bool {
 /// display (reported live in aibc250, Danii, 2026-09-14: "a red error
 /// corrupting the TUI"). Capturing it folds the message into the normal
 /// `Result` error path instead, so it renders through llmtune's own error
-/// display like every other failure. If the interactive TUI owns the
-/// terminal AND sudo would need to prompt (see `refuse_interactive_sudo`),
-/// refuses up front with an actionable message instead of risking that
-/// prompt at all.
+/// display like every other failure. While the interactive TUI owns the
+/// terminal, the call runs with `-n` (see `must_be_noninteractive`) so a
+/// password prompt - which bypasses stdout/stderr entirely, straight to
+/// `/dev/tty` - is never even attempted; sudo fails immediately instead,
+/// with a message that says a password is needed, instead of writing an
+/// unusable prompt onto the TUI's screen.
 pub(crate) fn sudo(args: &[&str]) -> Result<()> {
     if args.is_empty() {
         bail!("privileged exec called with an empty argv");
     }
     let (prog, rest) = privileged_argv(args, is_root());
-    if prog == "sudo" && refuse_interactive_sudo(tui_active(), sudo_cached()) {
-        bail!(
-            "this needs a sudo password, but the interactive TUI can't safely prompt for one \
-             (the prompt would write straight to the terminal ratatui is drawing to, with no way \
-             to type an answer) - run `sudo -v` in another terminal first (caches it for a while), \
-             or add a NOPASSWD sudoers rule for llmtune's systemctl calls, then retry"
-        );
+    let noninteractive = prog == "sudo" && must_be_noninteractive(tui_active());
+    let mut cmd = Command::new(prog);
+    if noninteractive {
+        cmd.arg("-n");
     }
-    let out = Command::new(prog).args(rest).output()?;
+    let out = cmd.args(rest).output()?;
     if !out.status.success() {
+        if noninteractive {
+            bail!(
+                "this needs a sudo password, but the interactive TUI can't safely prompt for one \
+                 (the prompt would write straight to the terminal ratatui is drawing to, with no \
+                 way to type an answer) - run `sudo -v` in another terminal first (caches it for a \
+                 while), or add a NOPASSWD sudoers rule for llmtune's systemctl calls, then retry"
+            );
+        }
         bail!(sudo_failure_message(prog, rest, out.status, &out.stderr));
     }
     Ok(())
@@ -1446,22 +1446,16 @@ mod tests {
     }
 
     #[test]
-    fn refuse_interactive_sudo_only_when_tui_active_and_uncached() {
+    fn must_be_noninteractive_only_when_tui_active() {
         // The TUI can't safely prompt for a password (reported live in
-        // aibc250, Scent, 2026-09-14) - but only when one is ACTUALLY needed.
+        // aibc250, Scent, 2026-09-14) - the real call always runs with `-n`
+        // while it's active, no separate check-then-call probe (that was the
+        // first version's TOCTOU gap, and the prompt still got through).
+        assert!(must_be_noninteractive(true), "TUI active -> always -n");
         assert!(
-            refuse_interactive_sudo(true, false),
-            "TUI active, no cached credential -> refuse rather than risk a prompt"
-        );
-        assert!(
-            !refuse_interactive_sudo(true, true),
-            "TUI active but sudo already cached/NOPASSWD -> the real call won't prompt, fine"
-        );
-        assert!(
-            !refuse_interactive_sudo(false, false),
+            !must_be_noninteractive(false),
             "plain CLI, no TUI - interactive prompting works exactly as it always has"
         );
-        assert!(!refuse_interactive_sudo(false, true));
     }
 
     #[test]
