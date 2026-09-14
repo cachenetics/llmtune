@@ -8,6 +8,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Table};
 
 use super::widgets::*;
 use super::NodeApp;
+use crate::fmt::fit;
 use crate::mem;
 
 /// Render the in-card flag editor (one flag per line; selected highlighted; the
@@ -80,20 +81,6 @@ pub(super) fn draw_flag_editor(f: &mut Frame, area: Rect, app: &NodeApp) {
 
 pub(super) fn draw_models(f: &mut Frame, area: Rect, app: &NodeApp, focused: bool) {
     let vis = app.visible();
-    let rows: Vec<Row> = vis
-        .iter()
-        .map(|&i| {
-            let m = &app.models[i];
-            let mark = if m.served { "●" } else { " " };
-            let base = if m.served {
-                Style::default().fg(GOOD)
-            } else {
-                Style::default()
-            };
-            // Just the model name; everything else lives in the card.
-            Row::new(vec![Cell::from(format!("{mark} {}", m.name))]).style(base)
-        })
-        .collect();
     // title shows filtered/total + the active filter
     let title = if app.filter.is_empty() {
         format!("models ({})", app.models.len())
@@ -105,11 +92,32 @@ pub(super) fn draw_models(f: &mut Frame, area: Rect, app: &NodeApp, focused: boo
             app.filter
         )
     };
+    let block = panel(&title, focused);
+    // The list is for browsing/selection, not the source of truth for the
+    // full name (the card is) - this pane no longer grows to fit the longest
+    // model name (that let one long filename eat the card's share). Truncate
+    // WITH an ellipsis instead of letting ratatui hard-clip mid-character.
+    // -2 for the table's own highlight-symbol column (render_table below).
+    let avail = (block.inner(area).width as usize).saturating_sub(2).max(1);
+    let rows: Vec<Row> = vis
+        .iter()
+        .map(|&i| {
+            let m = &app.models[i];
+            let mark = if m.served { "●" } else { " " };
+            let base = if m.served {
+                Style::default().fg(GOOD)
+            } else {
+                Style::default()
+            };
+            // Just the model name; everything else lives in the card.
+            Row::new(vec![Cell::from(fit(&format!("{mark} {}", m.name), avail))]).style(base)
+        })
+        .collect();
     let table = Table::new(rows, [Constraint::Min(10)])
         .header(
             Row::new(vec!["model"]).style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         )
-        .block(panel(&title, focused));
+        .block(block);
     let sel = (!vis.is_empty()).then_some(app.sel);
     render_table(f, area, table, sel, focused);
 }

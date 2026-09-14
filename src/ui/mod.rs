@@ -3497,15 +3497,15 @@ mod tests {
         // Growing the terminal grows ONLY the model card: the rail and the
         // model list keep their natural widths; the card absorbs all extra
         // width and height.
-        let (rail_pref, maxname) = (36u16, 20u16);
-        let small = fleet::main_rects(Rect::new(0, 0, 100, 24), rail_pref, maxname);
-        let big = fleet::main_rects(Rect::new(0, 0, 160, 50), rail_pref, maxname);
+        let rail_pref = 36u16;
+        let small = fleet::main_rects(Rect::new(0, 0, 100, 24), rail_pref);
+        let big = fleet::main_rects(Rect::new(0, 0, 160, 50), rail_pref);
         let (rail_s, list_s, card_s) = (small.0.unwrap(), small.1.unwrap(), small.2);
         let (rail_b, list_b, card_b) = (big.0.unwrap(), big.1.unwrap(), big.2);
         assert_eq!(rail_s.width, rail_b.width, "rail width is natural/fixed");
         assert_eq!(rail_s.width, 36, "rail sits at its content width");
-        assert_eq!(list_s.width, list_b.width, "list width is natural/fixed");
-        assert_eq!(list_s.width, 28, "list sits at its content width");
+        assert_eq!(list_s.width, list_b.width, "list width is fixed");
+        assert_eq!(list_s.width, 22, "list sits at its fixed nominal width");
         assert_eq!(
             card_b.width - card_s.width,
             60,
@@ -3518,20 +3518,23 @@ mod tests {
         );
         // narrow terminals: the rail collapses first, then the list; the card
         // rect always exists
-        let (rail, list, _card) = fleet::main_rects(Rect::new(0, 0, 60, 20), rail_pref, maxname);
+        let (rail, list, _card) = fleet::main_rects(Rect::new(0, 0, 60, 20), rail_pref);
         assert!(rail.is_none(), "rail collapsed on a narrow terminal");
         assert!(list.is_some());
-        let (rail, list, card) = fleet::main_rects(Rect::new(0, 0, 30, 10), rail_pref, maxname);
+        let (rail, list, card) = fleet::main_rects(Rect::new(0, 0, 30, 10), rail_pref);
         assert!(rail.is_none() && list.is_none(), "list collapsed too");
         assert_eq!(card.width, 30, "the card takes the whole width");
     }
 
     #[test]
-    fn cockpit_rail_and_list_size_to_content() {
-        // A long served-model name widens the rail so the `served` row shows
-        // it in FULL, and the models list widens to the longest name - the
-        // operator saw both truncated at the old fixed 34-col widths. The
-        // card takes whatever width remains.
+    fn cockpit_rail_sizes_to_content_list_stays_fixed_and_truncates() {
+        // A long served-model name still widens the RAIL so the `served` row
+        // shows it in FULL - the operator saw it truncated at the old fixed
+        // 34-col rail width. The model LIST no longer sizes to content
+        // though (operator call, 2026-09-14, after community back-and-forth
+        // on list-vs-card width priority in aibc250): it stays at its fixed
+        // nominal width and ellipsis-truncates instead of growing - the full
+        // name's source of truth is the rail/card, not the list.
         let long = "LFM2.5-8B-A1B-UD-IQ4_NL.gguf"; // 28 cols
         let mut c = cockpit_n(1);
         c.fleet.cards[0].status.served = Some(long.into());
@@ -3540,37 +3543,41 @@ mod tests {
         // rail: lead(4) + label(8) + name(28) + chrome(4) = 44 (grew past 34)
         let pref = fleet::rail_natural_width(&c.fleet);
         assert_eq!(pref, 44, "rail width derived from the served row");
-        let (rail, list, card) = fleet::main_rects(Rect::new(0, 0, 140, 30), pref, 28);
+        let (rail, list, card) = fleet::main_rects(Rect::new(0, 0, 140, 30), pref);
         assert_eq!(rail.unwrap().width, 44, "rail grew to fit the served row");
-        assert_eq!(list.unwrap().width, 36, "list fits the longest name");
-        assert_eq!(card.width, 140 - 44 - 36, "the card gets the rest");
-        // and on the actual buffer: the full name renders untruncated in the
-        // rail (served row), the list, AND the card title - 3 occurrences,
-        // zero ellipsized copies
+        assert_eq!(list.unwrap().width, 22, "list stays at its fixed width");
+        assert_eq!(card.width, 140 - 44 - 22, "the card gets the rest");
+        // the fixed list column is too narrow for this 28-char name (that's
+        // the point - it's not sized to fit it), so it renders truncated
+        // there while the rail (content-sized) and card (elastic) still show
+        // it in full
         let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
         term.draw(|f| draw_cockpit(f, &c.view())).unwrap();
         let txt = buf_text(&term);
         assert_eq!(
             txt.matches(long).count(),
-            3,
-            "full name in rail + list + card: {txt}"
+            2,
+            "full name in rail + card only, list truncates it: {txt}"
         );
-        assert!(
-            !txt.contains("LFM2.5-8B-A1B-UD-…"),
-            "no ellipsized copy: {txt}"
-        );
-        // wider terminal: rail/list hold their content width, the card grows
-        let (rail_b, list_b, card_b) = fleet::main_rects(Rect::new(0, 0, 190, 30), pref, 28);
+        assert!(txt.contains('…'), "the list shows an ellipsis: {txt}");
+        // wider terminal: rail/list hold their fixed widths, the card grows
+        let (rail_b, list_b, card_b) = fleet::main_rects(Rect::new(0, 0, 190, 30), pref);
         assert_eq!(rail_b.unwrap().width, 44);
-        assert_eq!(list_b.unwrap().width, 36);
+        assert_eq!(list_b.unwrap().width, 22);
         assert_eq!(card_b.width, card.width + 50, "extra width -> the card");
-        // a pathological name hits the caps instead of eating the screen
+        // a pathological served-model name still hits the RAIL's cap instead
+        // of eating the screen; the list's width doesn't depend on any name
+        // at all any more
         let mut c2 = cockpit_n(1);
         c2.fleet.cards[0].status.served = Some("x".repeat(120));
         assert_eq!(fleet::rail_natural_width(&c2.fleet), 56, "rail capped");
-        let (rail_c, list_c, _) = fleet::main_rects(Rect::new(0, 0, 190, 30), 56, 120);
+        let (rail_c, list_c, _) = fleet::main_rects(Rect::new(0, 0, 190, 30), 56);
         assert_eq!(rail_c.unwrap().width, 56);
-        assert_eq!(list_c.unwrap().width, 80, "list capped");
+        assert_eq!(
+            list_c.unwrap().width,
+            22,
+            "list width is independent of name length"
+        );
         // shorter content sizes down toward the RAIL_W floor
         let c3 = cockpit_n(1);
         assert_eq!(
@@ -3581,19 +3588,19 @@ mod tests {
     }
 
     #[test]
-    fn cockpit_models_list_fits_realistic_long_gguf_names() {
-        // Reported live in aibc250 (Scent, 2026-09-13): the community's
-        // uncensored/abliterated GGUF filenames commonly run 60-70 chars,
-        // past the old 56-col MODELS_MAX (a ~44-char assumption) - the list
-        // clipped names like this on a normal-width terminal even though the
-        // (elastic) card pane sat mostly empty next to it.
+    fn cockpit_models_list_truncates_long_names_with_ellipsis() {
+        // Reported live in aibc250 (Scent/Danii): the list either ate too
+        // much width to fit a long name in full, or (the fix here) stays
+        // fixed-width and hard-clipped with no visual indicator - both bad.
+        // The list is fixed-width (2026-09-14 operator call) and must show
+        // an ellipsis for whatever doesn't fit rather than a raw clip.
         let long = "L3.2-8X3B-MOE-Dark-Champion-Instruct-18.4B-uncensored-abliterated.gguf"; // 70 cols
         let mut c = cockpit_n(1);
         c.node.models = vec![mi(long), mi("tiny.gguf")];
         let mut term = Terminal::new(TestBackend::new(160, 30)).unwrap();
         term.draw(|f| draw_cockpit(f, &c.view())).unwrap();
         let txt = buf_text(&term);
-        assert!(txt.contains(long), "full name renders untruncated: {txt}");
+        assert!(txt.contains('…'), "the list ellipsizes what doesn't fit: {txt}");
     }
 
     #[test]

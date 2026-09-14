@@ -31,13 +31,13 @@ const RAIL_W: u16 = 34;
 /// Content-sized rail cap: one pathologically long served-model name widens
 /// the rail only this far, then ellipsizes - the card must keep its share.
 const RAIL_MAX: u16 = 56;
-/// Content-sized model-list cap (the same guard as RAIL_MAX, but wider - the
-/// community's uncensored/abliterated GGUF filenames routinely run 50-65
-/// chars, well past RAIL_MAX's 44-char assumption; reported live in aibc250,
-/// screenshot showed names like `L3.2-8X3B-MOE-Dark-Champion-Inst-...`
-/// clipping at the old 56). 80 fits a ~72-char name + chrome in full; only a
-/// genuinely pathological name (100+ chars) still ellipsizes.
-const MODELS_MAX: u16 = 80;
+/// The model list's fixed nominal width - NOT content-derived (a single long
+/// filename used to drive this pane wide at the card's expense; the list is
+/// for browsing/selection, the full name lives in the card, and `draw_models`
+/// now ellipsis-truncates instead of letting ratatui hard-clip). Operator
+/// call (2026-09-14) after community back-and-forth on list-vs-card width
+/// priority in aibc250.
+const MODELS_W: u16 = 22;
 /// The model card never gets fewer columns than this.
 const CARD_MIN: u16 = 30;
 /// Minimum usable model-list width before it collapses into the card.
@@ -146,27 +146,21 @@ pub(super) fn rail_natural_width(app: &FleetApp) -> u16 {
     ((content + 4) as u16).clamp(RAIL_W, RAIL_MAX)
 }
 
-/// The three-pane column split. The rail and the model list keep their
-/// NATURAL widths (they never grow with the terminal): `rail_pref` is the
-/// rail's content-derived width (`rail_natural_width`), and the list sizes
-/// to the longest model name (marker + borders included, capped at
-/// MODELS_MAX) so no name is cut off. The model card is the single elastic
-/// pane - all extra width (and, columns being full height, all extra height)
-/// goes to it. Degrades on narrow terminals: the rail squeezes then
-/// collapses first, then the model list - the card rect is always returned.
-/// Pure geometry, so the elasticity is directly testable.
-pub(super) fn main_rects(
-    area: Rect,
-    rail_pref: u16,
-    maxname: u16,
-) -> (Option<Rect>, Option<Rect>, Rect) {
+/// The three-pane column split. The rail keeps its NATURAL width (it never
+/// grows with the terminal - `rail_pref` is its content-derived width, see
+/// `rail_natural_width`). The model list sits at a fixed nominal width
+/// (MODELS_W) - it is NOT content-derived, `draw_models` ellipsis-truncates
+/// whatever doesn't fit. The model card is the single elastic pane - all
+/// extra width (and, columns being full height, all extra height) goes to
+/// it. Degrades on narrow terminals: the rail squeezes then collapses first,
+/// then the model list - the card rect is always returned. Pure geometry, so
+/// the elasticity is directly testable.
+pub(super) fn main_rects(area: Rect, rail_pref: u16) -> (Option<Rect>, Option<Rect>, Rect) {
     let w = area.width;
     let show_rail = w >= RAIL_MIN + 22 + CARD_MIN;
     let show_models = w >= MODELS_MIN + CARD_MIN;
     if show_rail {
-        let models_w = (maxname + 8)
-            .clamp(22, MODELS_MAX)
-            .min(w - RAIL_MIN - CARD_MIN);
+        let models_w = MODELS_W.max(MODELS_MIN).min(w - RAIL_MIN - CARD_MIN);
         let rail_w = rail_pref
             .clamp(RAIL_MIN, RAIL_MAX)
             .min(w - models_w - CARD_MIN)
@@ -181,9 +175,7 @@ pub(super) fn main_rects(
             .split(area);
         (Some(cols[0]), Some(cols[1]), cols[2])
     } else if show_models {
-        let models_w = (maxname + 8)
-            .clamp(MODELS_MIN, MODELS_MAX)
-            .min(w - CARD_MIN);
+        let models_w = MODELS_W.max(MODELS_MIN).min(w - CARD_MIN);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(models_w), Constraint::Min(CARD_MIN)])
@@ -199,14 +191,7 @@ fn draw_main(f: &mut Frame, area: Rect, app: &CockpitView) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let maxname = app
-        .node
-        .models
-        .iter()
-        .map(|m| dwidth(&m.name) as u16)
-        .max()
-        .unwrap_or(18);
-    let (rail, models, card) = main_rects(area, rail_natural_width(app.fleet), maxname);
+    let (rail, models, card) = main_rects(area, rail_natural_width(app.fleet));
     if let Some(r) = rail {
         draw_rail(f, r, app.fleet, app.focus == Focus::Nodes);
     }
