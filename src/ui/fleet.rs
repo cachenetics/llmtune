@@ -31,9 +31,13 @@ const RAIL_W: u16 = 34;
 /// Content-sized rail cap: one pathologically long served-model name widens
 /// the rail only this far, then ellipsizes - the card must keep its share.
 const RAIL_MAX: u16 = 56;
-/// Content-sized model-list cap (the same guard as RAIL_MAX). 56 fits a ~44-char
-/// GGUF name + chrome in full; only a genuinely pathological name ellipsizes.
-const MODELS_MAX: u16 = 56;
+/// Content-sized model-list cap (the same guard as RAIL_MAX, but wider - the
+/// community's uncensored/abliterated GGUF filenames routinely run 50-65
+/// chars, well past RAIL_MAX's 44-char assumption; reported live in aibc250,
+/// screenshot showed names like `L3.2-8X3B-MOE-Dark-Champion-Inst-...`
+/// clipping at the old 56). 80 fits a ~72-char name + chrome in full; only a
+/// genuinely pathological name (100+ chars) still ellipsizes.
+const MODELS_MAX: u16 = 80;
 /// The model card never gets fewer columns than this.
 const CARD_MIN: u16 = 30;
 /// Minimum usable model-list width before it collapses into the card.

@@ -88,6 +88,8 @@ pub(crate) fn cmd_models_list(cfg: &Config, json: bool) -> Result<()> {
 
 pub(crate) fn cmd_models_add(cfg: &Config, source: &str, json: bool) -> Result<()> {
     let dir = library::dir(cfg);
+    let source = library::normalize_download_url(source);
+    let source = source.as_str();
     let name = library::dest_name(source)?;
     let out = if library::is_url(source) {
         if !json {

@@ -105,6 +105,26 @@ pub fn is_url(source: &str) -> bool {
     source.starts_with("http://") || source.starts_with("https://")
 }
 
+/// Rewrite a HuggingFace "blob" (web-viewer) URL to the "resolve" (raw file)
+/// URL it almost certainly meant. Pasting a model page URL straight out of
+/// the browser address bar - `.../blob/main/model.gguf` - is a common
+/// mistake: that endpoint serves an HTML viewer page, not the file, but the
+/// GET still succeeds (200 OK) so `add` downloads it fine and only fails at
+/// the very end with an opaque "bad magic" error (reported live in aibc250,
+/// 2026-09-14). `.../resolve/main/model.gguf` is the one that streams actual
+/// bytes - the two differ by exactly that one path segment. A no-op for
+/// anything that isn't a huggingface.co blob URL.
+pub fn normalize_download_url(url: &str) -> String {
+    let is_hf_page =
+        url.starts_with("https://huggingface.co/") || url.starts_with("http://huggingface.co/");
+    if is_hf_page {
+        if let Some(pos) = url.find("/blob/") {
+            return format!("{}/resolve/{}", &url[..pos], &url[pos + "/blob/".len()..]);
+        }
+    }
+    url.to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Atomic add
 // ---------------------------------------------------------------------------
@@ -436,6 +456,37 @@ mod tests {
             dest_name("https://h/a$b.gguf").is_err(),
             "shell-special char"
         );
+    }
+
+    // -- HuggingFace blob -> resolve URL rewrite -----------------------------
+
+    #[test]
+    fn normalize_download_url_rewrites_hf_blob_to_resolve() {
+        assert_eq!(
+            normalize_download_url(
+                "https://huggingface.co/org/repo/blob/main/Model-7B-Q4_K_M.gguf"
+            ),
+            "https://huggingface.co/org/repo/resolve/main/Model-7B-Q4_K_M.gguf",
+        );
+        // query string on the original blob URL is preserved through the rewrite
+        assert_eq!(
+            normalize_download_url("https://huggingface.co/org/repo/blob/main/m.gguf?x=1"),
+            "https://huggingface.co/org/repo/resolve/main/m.gguf?x=1",
+        );
+    }
+
+    #[test]
+    fn normalize_download_url_leaves_non_blob_and_non_hf_urls_alone() {
+        let resolve = "https://huggingface.co/org/repo/resolve/main/m.gguf";
+        assert_eq!(normalize_download_url(resolve), resolve, "already correct");
+        let other = "https://example.com/models/blob/main/m.gguf";
+        assert_eq!(
+            normalize_download_url(other),
+            other,
+            "not huggingface.co - left alone"
+        );
+        let local = "/some/dir/blob/m.gguf";
+        assert_eq!(normalize_download_url(local), local, "not a URL at all");
     }
 
     // -- GGUF magic validation ----------------------------------------------

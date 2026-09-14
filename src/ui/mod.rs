@@ -3570,7 +3570,7 @@ mod tests {
         assert_eq!(fleet::rail_natural_width(&c2.fleet), 56, "rail capped");
         let (rail_c, list_c, _) = fleet::main_rects(Rect::new(0, 0, 190, 30), 56, 120);
         assert_eq!(rail_c.unwrap().width, 56);
-        assert_eq!(list_c.unwrap().width, 56, "list capped");
+        assert_eq!(list_c.unwrap().width, 80, "list capped");
         // shorter content sizes down toward the RAIL_W floor
         let c3 = cockpit_n(1);
         assert_eq!(
@@ -3578,6 +3578,22 @@ mod tests {
             38,
             "fixture's 22-col served name -> 4+8+22+4"
         );
+    }
+
+    #[test]
+    fn cockpit_models_list_fits_realistic_long_gguf_names() {
+        // Reported live in aibc250 (Scent, 2026-09-13): the community's
+        // uncensored/abliterated GGUF filenames commonly run 60-70 chars,
+        // past the old 56-col MODELS_MAX (a ~44-char assumption) - the list
+        // clipped names like this on a normal-width terminal even though the
+        // (elastic) card pane sat mostly empty next to it.
+        let long = "L3.2-8X3B-MOE-Dark-Champion-Instruct-18.4B-uncensored-abliterated.gguf"; // 70 cols
+        let mut c = cockpit_n(1);
+        c.node.models = vec![mi(long), mi("tiny.gguf")];
+        let mut term = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        term.draw(|f| draw_cockpit(f, &c.view())).unwrap();
+        let txt = buf_text(&term);
+        assert!(txt.contains(long), "full name renders untruncated: {txt}");
     }
 
     #[test]
