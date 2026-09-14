@@ -296,8 +296,8 @@ fn ensure_served(
             gate.finish_swap();
             let generic = format!("could not load `{}` - see the proxy log", m.name);
             match res {
-                Ok((outcome, _used_default)) if outcome.ok => Ok(m.name),
-                Ok((outcome, _)) => Err(Refuse::new(
+                Ok((outcome, _used_default, _flags_adjusted)) if outcome.ok => Ok(m.name),
+                Ok((outcome, ..)) => Err(Refuse::new(
                     503,
                     None,
                     generic,

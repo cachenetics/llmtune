@@ -3594,6 +3594,7 @@ mod tests {
                     reverted: false,
                     elapsed_secs: 12.0,
                     used_default: true,
+                    flags_adjusted: false,
                     detail: "ok".into(),
                 }),
             ))

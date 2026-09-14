@@ -78,6 +78,11 @@ pub struct SwapReport {
     pub reverted: bool,
     pub elapsed_secs: f64,
     pub used_default: bool,
+    /// True if the BC-250 memory guard altered the profile's flags for this
+    /// load (e.g. capped `-c`) - see `swap::adjust_flags`. A per-model
+    /// override is exempt: that's the user's explicit choice, not a guard.
+    #[serde(default)]
+    pub flags_adjusted: bool,
     pub detail: String,
 }
 
@@ -208,7 +213,7 @@ impl NodeTransport for LocalTransport {
     }
 
     fn load(&self, query: &str) -> Result<SwapReport> {
-        let (o, used_default) = nodeops::load(&self.node, query)?;
+        let (o, used_default, flags_adjusted) = nodeops::load(&self.node, query)?;
         Ok(SwapReport {
             from: o.from,
             to: o.to,
@@ -216,6 +221,7 @@ impl NodeTransport for LocalTransport {
             reverted: o.reverted,
             elapsed_secs: (o.elapsed_secs * 10.0).round() / 10.0,
             used_default,
+            flags_adjusted,
             detail: o.detail,
         })
     }

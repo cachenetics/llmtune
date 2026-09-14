@@ -115,9 +115,10 @@ pub(crate) fn parse_bind(url: &str) -> (String, u16) {
 }
 
 /// Hot-swap the node's served model to the one matching `query`, with
-/// health-checked auto-revert. Returns the outcome and whether the model fell
-/// back to default (no-profile) flags.
-pub fn load(node: &Node, query: &str) -> Result<(swap::SwapOutcome, bool)> {
+/// health-checked auto-revert. Returns the outcome, whether the model fell
+/// back to default (no-profile) flags, and whether the memory guard silently
+/// altered the profile's flags (e.g. capped `-c`) - see `swap::adjust_flags`.
+pub fn load(node: &Node, query: &str) -> Result<(swap::SwapOutcome, bool, bool)> {
     let _guard = lock::LockGuard::gpu()
         .map_err(|_| anyhow::anyhow!("the GPU is busy (a swap or benchmark is already running on this node) - refusing to swap"))?;
 
@@ -130,11 +131,12 @@ pub fn load(node: &Node, query: &str) -> Result<(swap::SwapOutcome, bool)> {
     }
     let profiles: Vec<Profile> = profile::load()?;
     let (prof, used_default) = profile::resolve(&profiles, &m.arch, m.quant.as_deref());
-    // A per-model override wins over the profile's memory-guarded flags.
-    let mut flags = profile::load_overrides()
-        .get(&m.name)
-        .cloned()
-        .unwrap_or_else(|| swap::adjust_flags(prof, &m));
+    // A per-model override wins over the profile's memory-guarded flags. Only
+    // the guarded (non-override) path can silently diverge from what the user
+    // wrote in profiles.toml - a per-model override is what the user asked for.
+    let has_override = profile::load_overrides().get(&m.name).cloned();
+    let flags_adjusted = has_override.is_none() && swap::adjust_flags(prof, &m) != prof.flags;
+    let mut flags = has_override.unwrap_or_else(|| swap::adjust_flags(prof, &m));
     // Require an API key on the server if one is configured (so an exposed
     // server isn't wide open). llmtune's own probes send it via llama::auth.
     // Pass it via a 0600 --api-key-file (NOT --api-key <k>, which would sit in
@@ -173,7 +175,7 @@ pub fn load(node: &Node, query: &str) -> Result<(swap::SwapOutcome, bool)> {
             crate::cluster::clear_active();
         }
     }
-    Ok((outcome, used_default))
+    Ok((outcome, used_default, flags_adjusted))
 }
 
 /// Look up the arch/quant/profile of the currently-served model by matching its

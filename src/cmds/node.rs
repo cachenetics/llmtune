@@ -752,6 +752,12 @@ pub(crate) fn cmd_node_load(cfg: &Config, sel: Option<&str>, name: &str, json: b
     if r.ok && r.used_default {
         println!("       (no arch profile - used conservative default flags)");
     }
+    if r.ok && r.flags_adjusted {
+        println!(
+            "       (memory guard adjusted your profile's flags to fit the BC-250 UMA - \
+             run `llmtune profile show {name}` to see what changed and why)"
+        );
+    }
     println!("       elapsed {:.1}s", r.elapsed_secs);
     if !r.ok {
         std::process::exit(1);
