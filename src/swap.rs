@@ -707,16 +707,45 @@ fn privileged_argv<'a>(args: &'a [&'a str], root: bool) -> (&'a str, &'a [&'a st
 
 /// Run a privileged command: directly when already root, via sudo otherwise.
 /// (Kept under its historical name - every privileged call site routes here.)
+/// Captures stdout+stderr rather than inheriting them: a failing systemctl
+/// (e.g. `reset-failed`/`restart` against a unit that was never
+/// installed/enabled) writes its OWN colored error straight to whatever
+/// terminal it inherits - while the TUI has that terminal in
+/// alternate-screen/raw mode, an inherited stderr write lands directly on
+/// the ratatui-drawn screen, outside any widget's bounds, corrupting the
+/// display (reported live in aibc250, Danii, 2026-09-14: "a red error
+/// corrupting the TUI"). Capturing it folds the message into the normal
+/// `Result` error path instead, so it renders through llmtune's own error
+/// display like every other failure.
 pub(crate) fn sudo(args: &[&str]) -> Result<()> {
     if args.is_empty() {
         bail!("privileged exec called with an empty argv");
     }
     let (prog, rest) = privileged_argv(args, is_root());
-    let st = Command::new(prog).args(rest).status()?;
-    if !st.success() {
-        bail!("{prog} {rest:?} failed ({st})");
+    let out = Command::new(prog).args(rest).output()?;
+    if !out.status.success() {
+        bail!(sudo_failure_message(prog, rest, out.status, &out.stderr));
     }
     Ok(())
+}
+
+/// Pure formatter for a failed privileged command - separated from `sudo` so
+/// the message shape unit-tests without a real subprocess. Falls back to the
+/// bare exit status when stderr is empty/non-UTF8 (some failures, e.g. sudo
+/// itself refusing, print nothing there).
+fn sudo_failure_message(
+    prog: &str,
+    rest: &[&str],
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> String {
+    let msg = String::from_utf8_lossy(stderr);
+    let msg = msg.trim();
+    if msg.is_empty() {
+        format!("{prog} {rest:?} failed ({status})")
+    } else {
+        format!("{prog} {rest:?} failed ({status}): {msg}")
+    }
 }
 
 /// The user a systemd unit runs as (`User=`), or "root" if unset/unknown.
@@ -1361,6 +1390,34 @@ mod tests {
         let (prog, rest) = privileged_argv(&args, false);
         assert_eq!(prog, "sudo");
         assert_eq!(rest, &["systemctl", "restart", "u"]);
+    }
+
+    #[test]
+    fn sudo_failure_message_carries_captured_stderr() {
+        // A unit that was never installed/enabled: systemctl's own stderr is
+        // the whole point of a useful error here - it must survive into the
+        // message llmtune shows, not vanish into an inherited terminal write.
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(1 << 8);
+        let msg = sudo_failure_message(
+            "systemctl",
+            &["reset-failed", "llama-server.service"],
+            status,
+            b"Failed to reset failed state of unit llama-server.service: \
+              Unit llama-server.service not loaded.\n",
+        );
+        assert!(
+            msg.contains("Unit llama-server.service not loaded"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn sudo_failure_message_falls_back_without_stderr() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(1 << 8);
+        let msg = sudo_failure_message("systemctl", &["restart", "u"], status, b"");
+        assert_eq!(msg, format!("systemctl [\"restart\", \"u\"] failed ({status})"));
     }
 
     #[test]
