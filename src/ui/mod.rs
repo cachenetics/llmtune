@@ -50,17 +50,24 @@ use widgets::split_flags;
 #[cfg(test)]
 use widgets::{dwidth, wrap_display};
 
-/// Best-effort terminal teardown: leave raw mode + the alternate screen. Safe to
-/// call more than once, and from a panic hook (so a panic mid-draw doesn't leave
-/// the user's terminal in raw mode with no echo).
+/// Best-effort terminal teardown: leave raw mode + the alternate screen, and
+/// tell `swap::sudo` the TUI no longer owns the terminal. Safe to call more
+/// than once, and from a panic hook (so a panic mid-draw doesn't leave the
+/// user's terminal in raw mode with no echo, or the sudo-refusal flag stuck
+/// on for the rest of the process).
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = stdout().execute(LeaveAlternateScreen);
+    crate::swap::set_tui_active(false);
 }
 
 pub fn run(cfg: Config, config_path: Option<String>) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    // From here, a privileged call that would need an interactive sudo
+    // prompt refuses instead of risking one it can't safely show or let the
+    // user answer (see `swap::sudo`).
+    crate::swap::set_tui_active(true);
     // Chain a panic hook that restores the terminal before the default handler
     // prints the panic - otherwise a panic in the draw/event loop corrupts the tty.
     let prev = std::panic::take_hook();
