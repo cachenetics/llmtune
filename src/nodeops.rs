@@ -433,6 +433,26 @@ pub fn server_ctl(node: &Node, action: &str) -> Result<()> {
     }
 }
 
+/// The `journalctl` argv to tail (or follow) a node's llama-server unit - what
+/// it actually printed loading/serving a model, straight from its own
+/// journal. Requested live in aibc250 (Scent, 2026-09-14): the only way to
+/// see WHY a load failed was to know the unit name and run journalctl by
+/// hand. `--no-pager` always - this is a CLI tool, not an interactive pager
+/// session. Pure (no IO) so it unit-tests.
+pub fn logs_argv(unit: &str, lines: usize, follow: bool) -> Vec<String> {
+    let mut v = vec![
+        "-u".to_string(),
+        unit.to_string(),
+        "--no-pager".to_string(),
+        "-n".to_string(),
+        lines.to_string(),
+    ];
+    if follow {
+        v.push("-f".to_string());
+    }
+    v
+}
+
 /// Set + apply network exposure: persist the bind preference (0.0.0.0 vs
 /// 127.0.0.1), open/close the firewall port, and re-stage the served model's
 /// drop-in so it takes effect now. Returns `(applied, firewall_ok, backend)`.
@@ -519,6 +539,18 @@ mod tests {
     fn resolve_model_rejects_blank_query() {
         assert!(resolve_model(&local_node(), "   ").is_err());
         assert!(resolve_model(&local_node(), "").is_err());
+    }
+
+    #[test]
+    fn logs_argv_always_no_pager_follow_is_opt_in() {
+        assert_eq!(
+            logs_argv("llama-server.service", 200, false),
+            vec!["-u", "llama-server.service", "--no-pager", "-n", "200"],
+        );
+        assert_eq!(
+            logs_argv("llama-server.service", 50, true),
+            vec!["-u", "llama-server.service", "--no-pager", "-n", "50", "-f"],
+        );
     }
 
     #[test]

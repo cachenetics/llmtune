@@ -264,6 +264,17 @@ pub(crate) enum NodeCmd {
     },
     /// Remove llmtune's drop-in and revert the unit to its base config.
     Unload,
+    /// Tail llama-server's own systemd journal - what it actually printed
+    /// loading/serving a model. Local node only (ssh onto a remote node and
+    /// run it there).
+    Logs {
+        /// Lines of history to show.
+        #[arg(short = 'n', long, default_value_t = 200)]
+        lines: usize,
+        /// Keep streaming new lines (like `journalctl -f`); Ctrl-C to stop.
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// Preflight this node.
     Doctor,
     /// Largest context a model fits at a given KV-cache quant, from weights + the
@@ -680,6 +691,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 ),
                 NodeCmd::History { limit } => cmd_node_history(&cfg, sel, limit, cli.json),
                 NodeCmd::Unload => cmd_node_unload(&cfg, sel, cli.json),
+                NodeCmd::Logs { lines, follow } => {
+                    reject_remote(&cfg, sel, "node logs")?;
+                    cmd_node_logs(&cfg, lines, follow)
+                }
                 NodeCmd::Doctor => cmd_doctor_on(&cfg, sel, cli.json),
                 NodeCmd::Fit { model, kv } => {
                     reject_remote(&cfg, sel, "node fit")?;

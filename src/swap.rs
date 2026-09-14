@@ -108,6 +108,20 @@ pub fn render_dropin(
     for (k, v) in merged_env(base_env, ld, &profile.env) {
         s.push_str(&env_line(&k, &v));
     }
+    // `-m` always gets model_path in full (below), but a profile/override's
+    // flags are authored text - a companion-file flag (`--mmproj`,
+    // `--chat-template-file`, `--lora`, ...) commonly names its file bare
+    // (the way the user typed it running llama-server by hand from inside
+    // the models dir), not by full path. Without a WorkingDirectory, systemd
+    // defaults the unit's cwd to `/`, so that bare name resolves to nothing
+    // and llama-server fails to start - while the identical flags work fine
+    // run manually from the models dir. Reported live in aibc250 (Scent,
+    // 2026-09-14): `--mmproj Model-mmproj-Q8_0.gguf` failed under llmtune,
+    // loaded fine run by hand. Set the cwd to the model's own directory so
+    // any bare filename in the flags resolves the way the user expects.
+    if let Some(dir) = model_path.parent() {
+        s.push_str(&format!("WorkingDirectory={}\n", dir.display()));
+    }
     s.push_str("ExecStart=\n");
     // Quote the binary + model path so a space in either can't split the argv
     // systemd builds from ExecStart. Flags are authored (profile/override), so
@@ -938,6 +952,9 @@ mod tests {
         assert!(out.contains("Environment=GGML_VK_PREFER_HOST_MEMORY=1"));
         // bin + model path are quoted (space-safe); flags stay unquoted.
         assert!(out.contains("ExecStart=\nExecStart=\"/opt/llama/llama-server\" -m \"/models/Q.gguf\" --host 127.0.0.1 --port 8080 "));
+        // cwd is the model's own directory, so a bare-filename companion flag
+        // (--mmproj etc) resolves the same way it would run by hand.
+        assert!(out.contains("WorkingDirectory=/models\n"));
         // MTP is upstream now, via the `--spec-type` framework (the bare `--mtp`
         // from the initial merge was folded into `--spec-type draft-mtp` by #23269;
         // verified on a BC-250 - current upstream rejects `--mtp`).
@@ -997,6 +1014,26 @@ mod tests {
         );
         // the model path must survive as a single quoted argument
         assert!(out.contains("-m \"/models/My Big Model.gguf\""));
+    }
+
+    #[test]
+    fn dropin_sets_working_directory_to_the_models_dir() {
+        // A bare-filename companion flag (`--mmproj foo.gguf`, as the user
+        // typed it running llama-server by hand from inside the models dir)
+        // must resolve the same way under systemd - reported live in aibc250
+        // (Scent, 2026-09-14): it silently failed to start without this.
+        let p = a_profile("_default");
+        let out = render_dropin(
+            &p,
+            "/opt/llama/llama-server",
+            None,
+            "--mmproj mmproj-Q8_0.gguf",
+            Path::new("/var/lib/llmtune/models/Model.gguf"),
+            "127.0.0.1",
+            8080,
+            &BTreeMap::new(),
+        );
+        assert!(out.contains("WorkingDirectory=/var/lib/llmtune/models\n"));
     }
 
     #[test]

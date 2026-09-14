@@ -612,6 +612,22 @@ pub(crate) fn cmd_node_unload(cfg: &Config, sel: Option<&str>, json: bool) -> Re
     Ok(())
 }
 
+/// `node logs` - tail (or follow) llama-server's own journal on the local
+/// node. `reject_remote` has already confirmed `--node` wasn't a remote
+/// selector by the time this runs. There is no `--json` form: this is a live
+/// text stream, not a value.
+pub(crate) fn cmd_node_logs(cfg: &Config, lines: usize, follow: bool) -> Result<()> {
+    let node = cfg.local_node();
+    let status = std::process::Command::new("journalctl")
+        .args(nodeops::logs_argv(&node.llama_unit, lines, follow))
+        .status()
+        .map_err(|e| anyhow::anyhow!("running journalctl (is it installed?): {e}"))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
 /// `node build-version` - the installed version (commit slug) of a managed
 /// build on THIS node. The wire the cluster build-parity check reads over SSH;
 /// `version: null` = not installed here.
