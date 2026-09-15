@@ -126,8 +126,16 @@ pub fn render_dropin(
     // Quote the binary + model path so a space in either can't split the argv
     // systemd builds from ExecStart. Flags are authored (profile/override), so
     // they stay unquoted - they intentionally carry their own word boundaries.
+    // `stdbuf -oL -eL`: llama-server (like most C/C++ stdio) line-buffers its
+    // console log when stdout is a real terminal but fully block-buffers it
+    // once stdout is a pipe (systemd's journald capture) - so `node logs`/
+    // `journalctl -f` would show the SAME lines, just batched and delayed,
+    // instead of live as printed. Reported live in aibc250 (Scent,
+    // 2026-09-15): running by hand streamed output immediately, the same
+    // model under llmtune didn't. Forces line buffering regardless of what
+    // stdout is connected to, so journald gets each line as it's printed.
     s.push_str(&format!(
-        "ExecStart=\"{}\" -m \"{}\" --host {} --port {} {}\n",
+        "ExecStart=stdbuf -oL -eL \"{}\" -m \"{}\" --host {} --port {} {}\n",
         bin,
         model_path.display(),
         host,
@@ -1033,7 +1041,7 @@ mod tests {
         assert!(out.contains("Environment=LD_LIBRARY_PATH=/opt/llama"));
         assert!(out.contains("Environment=GGML_VK_PREFER_HOST_MEMORY=1"));
         // bin + model path are quoted (space-safe); flags stay unquoted.
-        assert!(out.contains("ExecStart=\nExecStart=\"/opt/llama/llama-server\" -m \"/models/Q.gguf\" --host 127.0.0.1 --port 8080 "));
+        assert!(out.contains("ExecStart=\nExecStart=stdbuf -oL -eL \"/opt/llama/llama-server\" -m \"/models/Q.gguf\" --host 127.0.0.1 --port 8080 "));
         // cwd is the model's own directory, so a bare-filename companion flag
         // (--mmproj etc) resolves the same way it would run by hand.
         assert!(out.contains("WorkingDirectory=/models\n"));
@@ -1096,6 +1104,30 @@ mod tests {
         );
         // the model path must survive as a single quoted argument
         assert!(out.contains("-m \"/models/My Big Model.gguf\""));
+    }
+
+    #[test]
+    fn dropin_forces_line_buffering_for_journald() {
+        // llama-server (like most C/C++ stdio) fully block-buffers its
+        // console log once stdout isn't a real terminal (systemd's journald
+        // capture) - `node logs`/`journalctl -f` would then show the same
+        // lines batched and delayed instead of live, unlike running it by
+        // hand. Reported live in aibc250 (Scent, 2026-09-15).
+        let p = a_profile("_default");
+        let out = render_dropin(
+            &p,
+            "/opt/llama/llama-server",
+            None,
+            "-c 4096",
+            Path::new("/models/Q.gguf"),
+            "127.0.0.1",
+            8080,
+            &BTreeMap::new(),
+        );
+        assert!(
+            out.contains("ExecStart=stdbuf -oL -eL \"/opt/llama/llama-server\""),
+            "stdbuf forces line buffering ahead of the real binary: {out}"
+        );
     }
 
     #[test]
