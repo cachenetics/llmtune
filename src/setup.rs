@@ -313,4 +313,39 @@ mod tests {
         let c = crate::config::Config::load_str(&t).expect("generated fleet.toml must parse");
         assert_eq!(c.local_node().models_dir, "/home/user/models");
     }
+
+    #[test]
+    fn clear_dropin_removes_the_entire_llmtune_layer() {
+        // Regression test for the unload-VRAM bug: `clear_dropin` must remove
+        // EVERY llmtune-written drop-in (model-select + safe fallback +
+        // crash-loop guard), not just the [model-select] one. While the
+        // safe-fallback conf survives, the unit's effective ExecStart stays
+        // `/bin/false` and the restart can never stop the running server -
+        // the model stays resident in VRAM.
+        //
+        // Drives the real classification path (collect_dropins_llmtune ->
+        // scan_dropins with the LLMTUNE_PREFIX classifier) over a temp dir
+        // holding the exact headers setup.rs writes, plus a foreign conf that
+        // must survive. The removal loop + systemctl bounce in clear_dropin
+        // itself need root/systemd; the bug lived in the classification.
+        let base = std::env::temp_dir().join(format!("llmtune-clear-{}", std::process::id()));
+        let dir = base.join("u.service.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("zzzzzz-llmtune.conf"), format!("# {}\n[Service]\n", swap::MARKER)).unwrap();
+        std::fs::write(dir.join("00-llmtune-safe.conf"), SAFE_FALLBACK_DROPIN).unwrap();
+        std::fs::write(dir.join("01-llmtune-limits.conf"), LIMITS_DROPIN).unwrap();
+        std::fs::write(dir.join("override.conf"), "[Service]\nExecStart=/bin/true\n").unwrap();
+
+        let (ours, foreign) = swap::collect_dropins_in(&[(dir.clone(), true)], |t| t.contains(swap::LLMTUNE_PREFIX));
+        let names: Vec<String> = ours.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        // all three llmtune drop-ins are classified removable...
+        assert!(names.contains(&"zzzzzz-llmtune.conf".to_string()), "model-select must be removed");
+        assert!(names.contains(&"00-llmtune-safe.conf".to_string()), "safe fallback must be removed");
+        assert!(names.contains(&"01-llmtune-limits.conf".to_string()), "crash-loop guard must be removed");
+        assert_eq!(ours.len(), 3);
+        // ...and the foreign conf is NOT (clear_dropin must leave it alone).
+        assert!(foreign.contains(&"override.conf".to_string()));
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }
