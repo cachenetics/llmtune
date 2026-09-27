@@ -262,7 +262,8 @@ pub(crate) enum NodeCmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
-    /// Remove llmtune's drop-in and revert the unit to its base config.
+    /// Remove llmtune's drop-ins and revert the unit to its base config, stopping
+    /// the server so the model is freed from VRAM.
     Unload,
     /// Tail llama-server's own systemd journal - what it actually printed
     /// loading/serving a model. Local node only (ssh onto a remote node and
